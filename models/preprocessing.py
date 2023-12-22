@@ -1,4 +1,15 @@
+import torch
+from sklearn.pipeline import Pipeline
 from sklearn.base import TransformerMixin
+
+
+class Preprocessor:
+    def __init__(self):
+        self.preprocessor = Pipeline([('passthrough', None)])
+
+    def transformed_sample(self, x: torch.Tensor) -> torch.Tensor:
+        samples = self.forward(x).cpu().data.numpy()
+        return self.preprocessor.inverse_transform(samples)
 
 
 class ManualMinMaxScaler(TransformerMixin):

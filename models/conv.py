@@ -5,48 +5,127 @@
 
 import torch
 from torch import nn
+from models import layers
+from models.preprocessing import Preprocessor
 
 
-class Generator(nn.Module):
-    activations = {
-        'relu': nn.ReLU,
-        'sigmoid': nn.Sigmoid,
-        'tanh': nn.Tanh,
-        'leakyrelu': nn.LeakyReLU,
-        'lipswish': nn.SiLU
-    }
-    def __init__(self, input_size, num_filters, num_layers, output_size, activation='relu', output_activation='sigmoid'):
+class Generator(nn.Module, Preprocessor):
+    def __init__(self,
+                 input_size: int,
+                 num_filters: int,
+                 num_layers: int,
+                 output_size: int,
+                 num_vars: int,
+                 activation: str = 'lipswish',
+                 output_activation: str = 'sigmoid',
+                 **kwargs) -> None:
+        """
+        A convolution-based generator.
+
+        Parameters
+        ----------
+        input_size : int
+            Size of the input latent space.
+        num_filters : int
+            The number of filters to use in the convolutional layers.
+        num_layers : int
+            The number of convolutional layers.
+        output_size : int
+            The size of the output (number of timesteps). All num_vars variables will have this many timesteps.
+        num_vars : int
+            The number of variables to generate.
+        activation : str (default: 'relu')
+            The activation function to use for the hidden layers.
+        output_activation : str (default: 'identity')
+            The activation function to use for the output layer.
+        kwargs : dict
+            Keyword arguments to pass to the ConvTranspose1D layers.
+        """
         super().__init__()
+        Preprocessor.__init__(self)
         self.latent_dim = input_size
         self.n_channels = num_filters
-        self.model = nn.Sequential(
-            nn.Linear(self.latent_dim, self.latent_dim * num_filters),  # to expand the input from latent_dim to latent_dim*n_channels
-            self.activations.get(activation)(),
-            nn.Unflatten(1, (num_filters, self.latent_dim)),
-            self.activations.get(activation)(),
-            nn.ConvTranspose1d(num_filters, num_filters, kernel_size=3, stride=1, padding=1),
-            self.activations.get(activation)(),
-            nn.ConvTranspose1d(num_filters, 1, kernel_size=3, stride=1, padding=1)  # FIXME can't change output size with current parameterization
-        )
 
-    def forward(self, x):
+        # Intermediate and final activation functions
+        interm_activation = layers.activations.get(activation.lower())
+        final_activation = layers.activations.get(output_activation.lower())
+
+        # ConvTranspose1d default parameters
+        stride = kwargs.get('stride', 1)
+        padding = kwargs.get('padding', 1)
+        kernel_size = kwargs.get('kernel_size', 3)
+
+        # input will be of shape (batch_size, latent_dim)
+        _model = [nn.Linear(self.latent_dim, output_size * num_filters),
+                  interm_activation(),
+                  nn.Unflatten(1, (num_filters, output_size))]  # to expand the input from latent_dim to latent_dim*n_channels
+        for _ in range(num_layers):
+            _model.append(nn.ConvTranspose1d(num_filters, num_filters, kernel_size=kernel_size, stride=stride, padding=padding))
+            _model.append(interm_activation())
+        _model.append(nn.ConvTranspose1d(num_filters, num_vars, kernel_size=kernel_size, stride=stride, padding=padding))
+        _model.append(final_activation())
+
+        self.model = nn.Sequential(*_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # model input x has shape (batch_size, num_vars, )
         return self.model(x)
 
-    def sample_latent(self, num_samples):
+    def sample_latent(self, num_samples: int = 1) -> torch.Tensor:
         return torch.randn((num_samples, self.latent_dim))
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Conv1d(1, 12, 3, stride=1, padding=1),
-            nn.LeakyReLU(0.2),
-            nn.Conv1d(12, 4, 3, stride=1, padding=1),
-            nn.Flatten(),
-            nn.Linear(4 * 24, 1)  # n_channels * generated_length
-            # swap Linear with MLP?
-        )
+    def __init__(self,
+                 num_filters: int,
+                 num_layers: int,
+                 activation: str = 'lipswish',
+                 output_activation: str = 'sigmoid',
+                 **kwargs) -> None:
+        """
+        A convolution-based discriminator. Uses a linear read-out layer and an optional final activation at the output.
 
-    def forward(self, x):
+        Parameters
+        ----------
+        num_filters : int
+            The number of filters to use in the convolutional layers.
+        num_layers : int
+            The number of convolutional layers.
+        activation : str (default: 'relu')
+            The activation function to use for the hidden layers.
+        output_activation : str (default: 'identity')
+            The activation function to use for the output layer.
+        kwargs : dict
+            Keyword arguments to pass to the Conv1D layers.
+        """
+        super().__init__()
+
+        # Default padding and stride values are 1. Combined with a default filter size of 3,
+        # this will preserve the input shape.
+        kernel_size = kwargs.get('kernel_size', 3)
+        padding = kwargs.get('padding', 1)
+        stride = kwargs.get('stride', 1)
+
+        # Intermediate and final activation functions
+        interm_activation = layers.activations.get(activation.lower())
+        final_activation = layers.activations.get(output_activation.lower())
+
+        # LazyConv1d as a first layer gives flexibility in the input shape
+        _model = [nn.LazyConv1d(num_filters, kernel_size=kernel_size, stride=stride, padding=padding), interm_activation()]
+        # Add the rest of the convolutional layers, all with the same parameters
+        # FIXME it would be nice to have a way to specify the number of filters for each layer rather than using the same number for all layers
+        for _ in range(num_layers - 1):
+            _model.append(nn.Conv1d(num_filters, num_filters, kernel_size=kernel_size, stride=stride, padding=padding))
+            _model.append(interm_activation())
+        # Flatten the output of the convolutional layers so it can be fed into the linear read-out layer
+        _model.append(nn.Flatten())
+        # Linear read-out layer. Using a LazyLinear layer here since it's unsure what the input shape will be.
+        # FIXME add a way to add a full MLP after the convolutional layers rather than just a single linear layer
+        _model.append(nn.LazyLinear(1))
+        _model.append(final_activation())
+
+        self.model = nn.Sequential(*_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # model input x has shape (batch_size, num_vars, num_time_steps)
         return self.model(x)

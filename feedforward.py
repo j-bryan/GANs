@@ -14,12 +14,12 @@ from utils import TrainingPlotter
 
 def train_feedfoward():
     # Set up training. All of these parameters are saved along with the models so the training can be reproduced.
-    params = {'time_series_length': 24,
+    params = {'time_series_length': 24,  # number of nodes in generator output, discriminator input
               'ISO': 'ERCOT',
-              'variables': ['SOLAR', 'WIND', 'TOTALLOAD'],
+              'variables': ['SOLAR'],
               'gen_input_size': 100,
-              'gen_hidden_size': 256,
-              'gen_num_layers': 3,
+              'gen_hidden_size': 256,  # number of nodes
+              'gen_num_layers': 3,     # number of layers
               'dis_hidden_size': 256,
               'dis_num_layers': 3,
               'gp_weight': 10,
@@ -29,8 +29,9 @@ def train_feedfoward():
               'dis_lr': 1e-4,
               'gen_betas': (0.5, 0.9),
               'dis_betas': (0.5, 0.9),
-              'epochs': 10,
+              'epochs': 30,
               'random_seed': 12345}
+
     if isinstance(params['variables'], str):
         params['variables'] = [params['variables']]
     torch.manual_seed(params['random_seed'])
@@ -71,10 +72,9 @@ def train_feedfoward():
     trainer.save_training_gif('training.gif')
 
     # Save models and hyperparameters
-    torch.save(G.state_dict(), 'saved_models/ff_gen_ercot_lws.pt')
-    torch.save(D.state_dict(), 'saved_models/ff_dis_ercot_lws.pt')
-
-    with open('saved_models/ff_params_ercot_solar.json', 'w') as f:
+    torch.save(G.state_dict(), f'saved_models/ff_gen_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt')
+    torch.save(D.state_dict(), f'saved_models/ff_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt')
+    with open(f'saved_models/ff_params_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.json', 'w') as f:
         json.dump(params, f)
 
 

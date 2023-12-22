@@ -2,7 +2,6 @@ import io
 from PIL import Image
 import imageio
 import matplotlib.pyplot as plt
-from sklearn.pipeline import Pipeline
 
 
 class TrainingPlotter:
@@ -16,7 +15,9 @@ class TrainingPlotter:
         self._samples_names = varnames.copy()
         self._loss_names = loss_names.copy()
 
-        if len(varnames) > len(loss_names):
+        if len(varnames) == 1:
+            varnames = varnames * len(loss_names)
+        elif len(varnames) > len(loss_names):
             loss_names += ['.'] * (len(varnames) - len(loss_names))
         elif len(varnames) < len(loss_names):
             varnames += ['.'] * (len(loss_names) - len(varnames))
