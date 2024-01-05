@@ -101,7 +101,7 @@ def train_cnn(warm_start: bool = False):
 
 
 def evaluate_cnn():
-    with open('saved_models/cnn_params_ERCOT_sw.json', 'r') as f:
+    with open('saved_models/cnn/cnn_params_ERCOT_sw.json', 'r') as f:
         params = json.load(f)
 
     if isinstance(params['variables'], str):
@@ -139,8 +139,8 @@ def evaluate_cnn():
     D(D_init_input)
 
     # load the models
-    G.load_state_dict(torch.load(f'saved_models/cnn_gen_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
-    D.load_state_dict(torch.load(f'saved_models/cnn_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
+    G.load_state_dict(torch.load(f'saved_models/cnn/cnn_gen_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
+    D.load_state_dict(torch.load(f'saved_models/cnn/cnn_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
 
     # Evaluate the model for basic statistical properties
     # First, we need to sample the generator. We'll use 1000 samples.
