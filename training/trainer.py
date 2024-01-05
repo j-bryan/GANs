@@ -85,12 +85,17 @@ class Trainer:
                 self._fixed_latents = self._fixed_latents.cuda()
             self._plot_training_sample(0)  # initial sample with untrained models
 
-        if self.print_every > 0:
-            print('{:10}{:10}{:10}{:10}{:10}'.format('Epoch', 'D Loss', 'G Loss', 'Grad Pen', 'Grad Norm'))
+            # Print header using the keys of the losses dictionary
+            header_template = '{:<10}' * (len(self.losses.keys()) + 1)
+            print(header_template.format('Epoch', *list(self.losses.keys())))
+
+            # template for printing losses during the training process
+            print_template = '{:<10}' + '{:<10.4f}' * len(self.losses.keys())
+
         for epoch in range(epochs):
             self._train_epoch(data_loader)
             if self.print_every > 0 and (epoch + 1) % self.print_every == 0:
-                print('{:<10}{:<10.4f}{:<10.4f}{:<10.4f}{:<10.4f}'.format(epoch + 1, self.losses['D'][-1], self.losses['G'][-1], self.losses['GP'][-1], self.losses['gradient_norm'][-1]))
+                print(print_template.format(epoch + 1, *[loss[-1] for loss in self.losses.values()]))
 
             # Save progress
             if self.plot_every > 0 and (epoch + 1) % self.plot_every == 0:

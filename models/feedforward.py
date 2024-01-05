@@ -5,7 +5,8 @@ from models.preprocessing import Preprocessor
 
 
 class Generator(torch.nn.Module, Preprocessor):
-    def __init__(self, input_size: int,
+    def __init__(self,
+                 input_size: int,
                  hidden_size: int,
                  num_layers: int,
                  output_size: int,
@@ -46,7 +47,8 @@ class Generator(torch.nn.Module, Preprocessor):
 
 
 class Discriminator(torch.nn.Module):
-    def __init__(self, input_size: int,
+    def __init__(self,
+                 input_size: int,
                  hidden_size: int,
                  num_layers: int,
                  num_vars: int = 1) -> None:

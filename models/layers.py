@@ -52,8 +52,13 @@ class MLP(torch.nn.Module):
         """
         super().__init__()
 
+        if activation_kwargs is None:
+            activation_kwargs = {}
+        if final_activation_kwargs is None:
+            final_activation_kwargs = {}
+
         model = [torch.nn.Linear(in_size, mlp_size),
-                 self.activations.get(activation.lower())(**activation_kwargs)]
+                 activations.get(activation.lower())(**activation_kwargs)]
         for _ in range(num_layers - 1):
             model.append(torch.nn.Linear(mlp_size, mlp_size))
             model.append(activations.get(activation.lower())(**activation_kwargs))
