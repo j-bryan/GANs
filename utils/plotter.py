@@ -1,3 +1,4 @@
+import os
 import io
 from PIL import Image
 import imageio
@@ -62,8 +63,17 @@ class TrainingPlotter:
         if filename.endswith('.png'):
             filename = filename[:-4]
 
-        for i, frame in enumerate(self.frames):
-            if i % save_every == 0:
+        # Make sure the target directory exists
+        if not os.path.exists(os.path.dirname(filename)):
+            os.makedirs(os.path.dirname(filename))
+
+        # save the first and last frames
+        self.frames[0].save(f'{filename}_initial.png')
+        self.frames[-1].save(f'{filename}_final.png')
+
+        # save intermediate frames
+        for i, frame in enumerate(self.frames[1:-1]):  # first and last frames handled separately
+            if (i + 1) % save_every == 0:
                 frame.save(f'{filename}_{i}.png')
 
 

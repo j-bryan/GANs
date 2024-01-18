@@ -1,3 +1,4 @@
+from tqdm import trange, tqdm
 from torch.autograd import Variable
 
 
@@ -87,15 +88,15 @@ class Trainer:
 
             # Print header using the keys of the losses dictionary
             header_template = '{:<10}' * (len(self.losses.keys()) + 1)
-            print(header_template.format('Epoch', *list(self.losses.keys())))
+            tqdm.write(header_template.format('Epoch', *list(self.losses.keys())))
 
             # template for printing losses during the training process
             print_template = '{:<10}' + '{:<10.4f}' * len(self.losses.keys())
 
-        for epoch in range(epochs):
+        for epoch in trange(epochs):  # tqdm gives us a nice progress bar
             self._train_epoch(data_loader)
             if self.print_every > 0 and (epoch + 1) % self.print_every == 0:
-                print(print_template.format(epoch + 1, *[loss[-1] for loss in self.losses.values()]))
+                tqdm.write(print_template.format(epoch + 1, *[loss[-1] for loss in self.losses.values()]))
 
             # Save progress
             if self.plot_every > 0 and (epoch + 1) % self.plot_every == 0:
@@ -103,8 +104,8 @@ class Trainer:
 
             # Check early stopping
             if self.check_stopping and self.early_stopping.stop(self.losses):
-                print('Early stopping at epoch {}'.format(epoch + 1))
-                print(self.early_stopping.message)
+                tqdm.write('Early stopping at epoch {}'.format(epoch + 1))
+                tqdm.write(self.early_stopping.message)
                 break
 
     def _plot_training_sample(self, epoch):

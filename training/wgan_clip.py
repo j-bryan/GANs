@@ -18,9 +18,6 @@ class WGANClipTrainer(Trainer):
         generated_data = self.sample_generator(batch_size)
 
         # Calculate probabilities on real and generated data
-        print('Generated data shape:', generated_data.shape)
-        print('Real data shape:', data.shape)
-        exit()
         data = Variable(data)
         if self.use_cuda:
             data = data.cuda()
