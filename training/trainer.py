@@ -1,12 +1,49 @@
 from tqdm import trange, tqdm
+import torch
 from torch.autograd import Variable
+
+from utils.plotting import TrainingPlotter
+from utils import get_accelerator_device
 
 
 class Trainer:
-    def __init__(self, generator, discriminator, g_optimizer, d_optimizer,
-                 critic_iterations=5, early_stopping=None, plotter=None):
-        self.G = generator
-        self.D = discriminator
+    """
+    Basic WGAN training. Variations to the loss function, such as gradient penalty and
+    weight clipping, are implemented in their own child classes.
+    """
+    def __init__(self,
+                 generator: torch.nn.Module,
+                 discriminator: torch.nn.Module,
+                 g_optimizer: torch.optim.Optimizer,
+                 d_optimizer: torch.optim.Optimizer,
+                 critic_iterations: int = 5,
+                 plotter: TrainingPlotter | None = None,
+                 device: str | None = None) -> None:
+        """
+        Constructor.
+
+        Parameters
+        ----------
+        generator : torch.nn.Module
+            The generator model.
+        discriminator : torch.nn.Module
+            The discriminator model.
+        g_optimizer : torch.optim.Optimizer
+            The optimizer for the generator.
+        d_optimizer : torch.optim.Optimizer
+            The optimizer for the discriminator.
+        critic_iterations : int
+            The number of iterations to train the critic for each generator iteration.
+        plotter : TrainingPlotter, optional
+            The plotter to use for plotting training progress.
+        device : str, optional
+            The device to use for training. If None, a GPU is used if available, otherwise
+            defaulting to CPU.
+        """
+        self.device = get_accelerator_device() if device is None else device
+
+        self.G = generator.to(device)
+        self.D = discriminator.to(device)
         self.G_opt = g_optimizer
         self.D_opt = d_optimizer
         self.losses = {'G': [], 'D': []}
@@ -18,21 +55,15 @@ class Trainer:
         self.plot_every = 0
         self.plotter = plotter
 
-        self.early_stopping = early_stopping
-        self.check_stopping = False if early_stopping is None else True
+    def _critic_train_iteration(self, data: torch.Tensor) -> None:
+        """
+        Train the critic for one iteration.
 
-        # Infer the device to use from G
-        # Let's make sure both models are on the same device. Not strictly necessary but probably what
-        # is best in most cases, so we'll double check.
-        g_device = next(generator.parameters()).device
-        d_device = next(discriminator.parameters()).device
-        if g_device.type != d_device.type:  # G and D not on the same device
-            message =  'Generator and discriminator models are not on the same device! '\
-                      f'Generator is on {g_device.type}, but discriminator is on {d_device.type}'
-            raise ValueError(message)
-        self.device = g_device
-
-    def _critic_train_iteration(self, data):
+        Parameters
+        ----------
+        data : torch.Tensor
+            The real data to train on.
+        """
         # Get generated data
         batch_size = data.size()[0]
         generated_data = self.sample_generator(batch_size)
@@ -51,11 +82,18 @@ class Trainer:
         self.losses['D'].append(d_loss.data.item())
         self.D_opt.step()
 
-    def _generator_train_iteration(self, data):
+    def _generator_train_iteration(self, batch_size: int) -> None:
+        """
+        Train the generator for one iteration.
+
+        Parameters
+        ----------
+        batch_size : int
+            Batch size for generated data.
+        """
         self.G_opt.zero_grad()
 
         # Get generated data
-        batch_size = data.size()[0]
         generated_data = self.sample_generator(batch_size)
 
         # Calculate loss and optimize
@@ -70,14 +108,40 @@ class Trainer:
         # Record loss
         self.losses['G'].append(g_loss.data.item())
 
-    def _train_epoch(self, data_loader):
+    def _train_epoch(self, data_loader: torch.utils.data.DataLoader) -> None:
+        """
+        Train the model for one epoch.
+
+        Parameters
+        ----------
+        data_loader : torch.utils.data.DataLoader
+            The data loader for the training data.
+        """
         for i, data in enumerate(data_loader):
             self.num_steps += 1
             self._critic_train_iteration(data)
             if (i + 1) % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
-                self._generator_train_iteration(data)
+                self._generator_train_iteration(data.size()[0])
 
-    def train(self, data_loader, epochs, print_every=None, plot_every=None):
+    def train(self,
+              data_loader: torch.utils.data.DataLoader,
+              epochs: int,
+              print_every: int | None = None,
+              plot_every: int | None = None):
+        """
+        Train the model.
+
+        Parameters
+        ----------
+        data_loader : torch.utils.data.DataLoader
+            The data loader for the training data.
+        epochs : int
+            The number of epochs to train for.
+        print_every : int, optional
+            If not None, print losses every `print_every` epochs.
+        plot_every : int, optional
+            If not None, plot a sample every `plot_every` epochs. Requires a plotter to be given on initialization.
+        """
         self.print_every = print_every or self.print_every
         self.plot_every = plot_every or self.plot_every
         if self.plot_every > 0 and self.plotter is None:
@@ -104,20 +168,45 @@ class Trainer:
             if self.plot_every > 0 and (epoch + 1) % self.plot_every == 0:
                 self._plot_training_sample(epoch + 1)
 
-            # Check early stopping
-            if self.check_stopping and self.early_stopping.stop(self.losses):
-                tqdm.write('Early stopping at epoch {}'.format(epoch + 1))
-                tqdm.write(self.early_stopping.message)
-                break
+    def _plot_training_sample(self, epoch: int) -> None:
+        """
+        Plot a sample of the training data.
 
-    def _plot_training_sample(self, epoch):
+        Parameters
+        ----------
+        epoch : int
+            The current epoch.
+        """
         train_sample = self.G.transformed_sample(self._fixed_latents)
         self.plotter.update(train_sample, self.losses, {'epoch': epoch})
 
-    def sample_generator(self, num_samples):
+    def sample_generator(self, num_samples: int) -> torch.Tensor:
+        """
+        Sample from the generator.
+
+        Parameters
+        ----------
+        num_samples : int
+            The number of samples to generate.
+
+        Returns
+        -------
+        generated_data : torch.Tensor
+            The generated data.
+        """
         latent_samples = Variable(self.G.sample_latent(num_samples)).to(self.device)
         generated_data = self.G(latent_samples)
         return generated_data
 
-    def save_training_gif(self, filename, duration=5):
+    def save_training_gif(self, filename: str, duration: int = 5) -> None:
+        """
+        Save a GIF of the training progress.
+        
+        Parameters
+        ----------
+        filename : str
+            The path to save the GIF to.
+        duration : int, optional
+            The approximate duration of the GIF in seconds.
+        """
         self.plotter.save_gif(filename, duration)

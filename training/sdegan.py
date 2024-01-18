@@ -6,10 +6,10 @@ from .trainer import Trainer
 
 class SDEGANTrainer(Trainer):
     def __init__(self, generator, discriminator, g_optimizer, d_optimizer,
-                 weight_clip=0.01, critic_iterations=5, use_cuda=False,
+                 weight_clip=0.01, critic_iterations=5, device=None,
                  early_stopping=None, plotter=None):
         super().__init__(generator, discriminator, g_optimizer, d_optimizer,
-                         critic_iterations, use_cuda, early_stopping, plotter)
+                         critic_iterations, plotter)
         self.clip = weight_clip
 
     def _critic_train_iteration(self, data):

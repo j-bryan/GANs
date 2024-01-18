@@ -4,16 +4,17 @@ from datetime import datetime
 import numpy as np
 import torch
 from torch.optim import Adam
+
 from sklearn.preprocessing import RobustScaler
+from models.preprocessing import ManualMinMaxScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.compose import make_column_transformer
 
 from models.conv import Generator, Discriminator
-from models.preprocessing import ManualMinMaxScaler
 from training import WGANGPTrainer
 from dataloaders import get_dataloader
-from utils import TrainingPlotter
-from scoring import hourly_distributions, autocorrelation
+from utils.plotting import TrainingPlotter
+from utils import get_accelerator_device
 
 
 def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 100) -> None:
@@ -28,6 +29,8 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
     warm_start : bool, optional
         If True, load saved models and continue training. Requires params_file to be specified.
         If False, train a new model.
+    epochs : int, optional
+        The number of epochs to train for.
     """
     # Set up training. All of these parameters are saved along with the models so the training can be reproduced.
     if params_file is not None:
@@ -57,13 +60,7 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
         }
     
     # Find the most appropriate device for training
-    if torch.cuda.is_available():
-        device = 'cuda'
-    elif torch.backends.mps.is_available():
-        device = 'mps'
-    else:
-        print('WARNING: Falling back to CPU. This may be slow!')
-        device = 'cpu'
+    device = get_accelerator_device()
 
     if isinstance(params['variables'], str):
         params['variables'] = [params['variables']]

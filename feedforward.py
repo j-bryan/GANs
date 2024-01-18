@@ -45,6 +45,7 @@ def train_feedfoward():
                       hidden_size=params['dis_hidden_size'],
                       num_layers=params['dis_num_layers'],
                       num_vars=len(params['variables']))
+
     preprocessor = make_pipeline(
         make_column_transformer(
             (ManualMinMaxScaler((0, 1), (-1, 1)), [params['variables'].index('WIND'), params['variables'].index('SOLAR')]),
