@@ -6,10 +6,9 @@ from .trainer import Trainer
 
 class WGANGPTrainer(Trainer):
     def __init__(self, generator, discriminator, g_optimizer, d_optimizer,
-                 gp_weight=10, critic_iterations=5, use_cuda=False,
-                 early_stopping=None, plotter=None):
+                 gp_weight=10, critic_iterations=5, early_stopping=None, plotter=None):
         super().__init__(generator, discriminator, g_optimizer, d_optimizer,
-                         critic_iterations, use_cuda, early_stopping, plotter)
+                         critic_iterations, early_stopping, plotter)
         self.gp_weight = gp_weight
         self.losses |= {'GP': [], 'gradient_norm': []}
 
@@ -19,9 +18,7 @@ class WGANGPTrainer(Trainer):
         generated_data = self.sample_generator(batch_size)
 
         # Calculate probabilities on real and generated data
-        data = Variable(data)
-        if self.use_cuda:
-            data = data.cuda()
+        data = Variable(data).to(self.device)
         d_real = self.D(data)
         d_generated = self.D(generated_data)
 
@@ -43,21 +40,15 @@ class WGANGPTrainer(Trainer):
 
         # Calculate interpolation
         alpha = torch.rand(batch_size, 1, 1)
-        alpha = alpha.expand_as(real_data)
-        if self.use_cuda:
-            alpha = alpha.cuda()
+        alpha = alpha.expand_as(real_data).to(self.device)
         interpolated = alpha * real_data.data + (1 - alpha) * generated_data.data
-        interpolated = Variable(interpolated, requires_grad=True)
-        if self.use_cuda:
-            interpolated = interpolated.cuda()
+        interpolated = Variable(interpolated, requires_grad=True).to(self.device)
 
         # Calculate probability of interpolated examples
         prob_interpolated = self.D(interpolated)
 
         # Calculate gradients of probabilities with respect to examples
-        grad_output = torch.ones(prob_interpolated.size())
-        if self.use_cuda:
-            grad_output = grad_output.cuda()
+        grad_output = torch.ones(prob_interpolated.size()).to(self.device)
         gradients = torch_grad(outputs=prob_interpolated,
                                inputs=interpolated,
                                grad_outputs=grad_output,

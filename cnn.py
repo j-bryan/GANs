@@ -55,6 +55,15 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
             'total_epochs_trained': 0,  # to keep track of how many epochs have been trained in case of warm start
             'random_seed': 12345
         }
+    
+    # Find the most appropriate device for training
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        print('WARNING: Falling back to CPU. This may be slow!')
+        device = 'cpu'
 
     if isinstance(params['variables'], str):
         params['variables'] = [params['variables']]
@@ -64,9 +73,9 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
                   num_filters=params['gen_num_filters'],
                   num_layers=params['gen_num_layers'],
                   output_size=params['time_series_length'],
-                  num_vars=len(params['variables']))
+                  num_vars=len(params['variables'])).to(device)
     D = Discriminator(num_filters=params['dis_num_filters'],
-                      num_layers=params['dis_num_layers'])
+                      num_layers=params['dis_num_layers']).to(device)
     # preprocessor = make_pipeline(
     #     make_column_transformer(
     #         (ManualMinMaxScaler((0, 1), (-1, 1)), [params['variables'].index('WIND'), params['variables'].index('SOLAR')]),
@@ -83,19 +92,8 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
 
     # Since the Generator and Discriminator use lazy layer initialization, we need to move them to the correct device,
     # specify data types, and call them once to initialize the layers.
-    G_init_input = torch.ones((1, params['gen_input_size']))
-    D_init_input = torch.ones((1, len(params['variables']), params['time_series_length']))
-    use_cuda = torch.cuda.is_available()
-    if use_cuda:
-        G.cuda()
-        D.cuda()
-        G_init_input = G_init_input.cuda()
-        D_init_input = D_init_input.cuda()
-    else:
-        G.cpu()
-        D.cpu()
-        G_init_input = G_init_input.cpu()
-        D_init_input = D_init_input.cpu()
+    G_init_input = torch.ones((1, params['gen_input_size'])).to(device)
+    D_init_input = torch.ones((1, len(params['variables']), params['time_series_length'])).to(device)
     G(G_init_input)
     D(D_init_input)
 
@@ -116,13 +114,12 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
     trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
                             gp_weight=params['gp_weight'],
                             critic_iterations=params['critic_iterations'],
-                            plotter=plotter,
-                            use_cuda=use_cuda)
+                            plotter=plotter)
 
     # Let's try to be smart about the frequency we print and plot. This should be proportional to the
-    # number of epochs we're training for. Let's aim for up to 100 of each.
+    # number of epochs we're training for. We'll try doing up to 100 plots and about 30 prints
     plot_every  = max(1, params['epochs'] // 100)
-    print_every = max(1, params['epochs'] // 100)
+    print_every = max(1, params['epochs'] // 30)
     trainer.train(data_loader=dataloader,
                   epochs=params['epochs'],
                   plot_every=plot_every,
@@ -138,8 +135,8 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
                         save_every=save_every)
 
     # Save models
-    torch.save(G.state_dict(), f'saved_models/cnn_gen_{iso}_{varnames_abbrev}.pt')
-    torch.save(D.state_dict(), f'saved_models/cnn_dis_{iso}_{varnames_abbrev}.pt')
+    torch.save(G.state_dict(), f'saved_models/cnn/cnn_gen_{iso}_{varnames_abbrev}.pt')
+    torch.save(D.state_dict(), f'saved_models/cnn/cnn_dis_{iso}_{varnames_abbrev}.pt')
 
     # Save parameters
     params['total_epochs_trained'] += params['epochs']

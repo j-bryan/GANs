@@ -4,14 +4,13 @@ from torch.autograd import Variable
 
 class Trainer:
     def __init__(self, generator, discriminator, g_optimizer, d_optimizer,
-                 critic_iterations=5, use_cuda=False, early_stopping=None, plotter=None):
+                 critic_iterations=5, early_stopping=None, plotter=None):
         self.G = generator
         self.D = discriminator
         self.G_opt = g_optimizer
         self.D_opt = d_optimizer
         self.losses = {'G': [], 'D': []}
         self.num_steps = 0
-        self.use_cuda = use_cuda
         self.critic_iterations = critic_iterations
 
         self._fixed_latent = None
@@ -22,9 +21,16 @@ class Trainer:
         self.early_stopping = early_stopping
         self.check_stopping = False if early_stopping is None else True
 
-        if self.use_cuda:
-            self.G.cuda()
-            self.D.cuda()
+        # Infer the device to use from G
+        # Let's make sure both models are on the same device. Not strictly necessary but probably what
+        # is best in most cases, so we'll double check.
+        g_device = next(generator.parameters()).device
+        d_device = next(discriminator.parameters()).device
+        if g_device.type != d_device.type:  # G and D not on the same device
+            message =  'Generator and discriminator models are not on the same device! '\
+                      f'Generator is on {g_device.type}, but discriminator is on {d_device.type}'
+            raise ValueError(message)
+        self.device = g_device
 
     def _critic_train_iteration(self, data):
         # Get generated data
@@ -32,9 +38,7 @@ class Trainer:
         generated_data = self.sample_generator(batch_size)
 
         # Calculate probabilities on real and generated data
-        data = Variable(data)
-        if self.use_cuda:
-            data = data.cuda()
+        data = Variable(data).to(self.device)
         d_real = self.D(data)
         d_generated = self.D(generated_data)
 
@@ -81,9 +85,7 @@ class Trainer:
 
         if self.plot_every > 0:
             # Fix latents to see how image generation improves during training
-            self._fixed_latents = self.G.sample_latent(64)
-            if self.use_cuda:
-                self._fixed_latents = self._fixed_latents.cuda()
+            self._fixed_latents = self.G.sample_latent(64).to(self.device)
             self._plot_training_sample(0)  # initial sample with untrained models
 
             # Print header using the keys of the losses dictionary
@@ -113,9 +115,7 @@ class Trainer:
         self.plotter.update(train_sample, self.losses, {'epoch': epoch})
 
     def sample_generator(self, num_samples):
-        latent_samples = Variable(self.G.sample_latent(num_samples))
-        if self.use_cuda:
-            latent_samples = latent_samples.cuda()
+        latent_samples = Variable(self.G.sample_latent(num_samples)).to(self.device)
         generated_data = self.G(latent_samples)
         return generated_data
 
