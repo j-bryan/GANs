@@ -1,3 +1,4 @@
+import os
 import json
 from datetime import datetime
 
@@ -121,25 +122,30 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
                   epochs=params['epochs'],
                   plot_every=plot_every,
                   print_every=print_every)
+            
+    # Save the trained models, parameters, and visualizations
+    dirname = 'saved_models/cnn/'
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
 
     # Save training visualizations
     iso = params['ISO']
     varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
-    trainer.save_training_gif(f'saved_models/cnn/training_cnn_{iso}_{varnames_abbrev}.gif')
+    trainer.save_training_gif(dirname + f'training_cnn_{iso}_{varnames_abbrev}.gif')
     # Saving individual frames from the GIF. We need to be careful to not save a ton of frames.
     save_every = len(plotter.frames) // 20 + 1  # will save at most 20 frames
-    plotter.save_frames(f'saved_models/cnn/training_progress/training_cnn_{iso}_{varnames_abbrev}.png',
+    plotter.save_frames(dirname + f'training_progress/training_cnn_{iso}_{varnames_abbrev}.png',
                         save_every=save_every)
 
     # Save models
-    torch.save(G.state_dict(), f'saved_models/cnn/cnn_gen_{iso}_{varnames_abbrev}.pt')
-    torch.save(D.state_dict(), f'saved_models/cnn/cnn_dis_{iso}_{varnames_abbrev}.pt')
+    torch.save(G.state_dict(), dirname + f'cnn_gen_{iso}_{varnames_abbrev}.pt')
+    torch.save(D.state_dict(), dirname + f'cnn_dis_{iso}_{varnames_abbrev}.pt')
 
     # Save parameters
     params['total_epochs_trained'] += params['epochs']
     params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # reuse the params_file name if it was specified, otherwise use the default naming scheme
-    filename = params_file if params_file is not None else f'saved_models/cnn/params_cnn_{iso}_{varnames_abbrev}.json'
+    filename = params_file if params_file is not None else dirname + f'params_cnn_{iso}_{varnames_abbrev}.json'
     with open(filename, 'w') as f:
         json.dump(params, f)
 
@@ -147,14 +153,17 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--params-file', type=str, help='path to a JSON file containing the training parameters for the model')
-    parser.add_argument('--warm-start', action='store_true', default=False, help='load saved models and continue training')
-    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')
+    parser.add_argument('--params-file', type=str,
+                        help='path to a JSON file containing the training parameters for the model')
+    parser.add_argument('--warm-start', action='store_true', default=False,
+                        help='load saved models and continue training')
+    parser.add_argument('--epochs', type=int, default=100,
+                        help='number of epochs to train for')
     args = parser.parse_args()
 
-    # Instead of specifying a model in the arguments for the warm start case, we rely on the naming
+    # NOTE: Instead of specifying a model in the arguments for the warm start case, we rely on the naming
     # convention for the saved models and construct the model name from the parameters specified in
-    # the
+    # the parameters file.
 
     train_cnn(params_file=args.params_file,
               warm_start=args.warm_start,

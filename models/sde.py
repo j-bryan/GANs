@@ -172,11 +172,6 @@ class Generator(torch.nn.Module, Preprocessor):
         ###################
         batch_size = init_noise.size(0)
         x0 = self._initial(init_noise)
-        print(init_noise.shape)
-        print(x0.shape)
-        print(x0[0])
-        print(x0[1])
-        exit()
 
         ###################
         # We use the reversible Heun method to get accurate gradients whilst using the adjoint method.
