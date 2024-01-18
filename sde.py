@@ -1,4 +1,7 @@
+import os
 import json
+from datetime import datetime
+
 import torch
 from torch.optim import Adam
 # from sklearn.preprocessing import RobustScaler
@@ -6,13 +9,15 @@ from torch.optim import Adam
 # from sklearn.compose import make_column_transformer
 
 from models.sde import Generator, Discriminator
-from training import SDEGANTrainer
+from training import WGANClipTrainer
 from dataloaders import get_sde_dataloader
 from utils.plotting import SDETrainingPlotter
 from utils import get_accelerator_device
 
 
-def train_sdegan(params_file: str = None, warm_start: bool = False, epochs: int = 100) -> None:
+def train_sdegan(params_file: str = None,
+                 warm_start: bool = False,
+                 epochs: int = 100) -> None:
     """
     Sets up and trains an SDE-GAN.
 
@@ -89,21 +94,58 @@ def train_sdegan(params_file: str = None, warm_start: bool = False, epochs: int 
     optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
 
     plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'])
-    trainer = SDEGANTrainer(G, D, optimizer_G, optimizer_D,
+    trainer = WGANClipTrainer(G, D, optimizer_G, optimizer_D,
                             weight_clip=params['weight_clip'],
                             critic_iterations=params['critic_iterations'],
                             plotter=plotter,
                             device=device)
 
-    trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=1, print_every=1)
-    trainer.save_training_gif('training.gif')
+    plot_every  = max(1, params['epochs'] // 100)
+    print_every = max(1, params['epochs'] // 30)
+    trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=plot_every, print_every=print_every)
+            
+    # Save the trained models, parameters, and visualizations
+    dirname = 'saved_models/sde/'
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
 
-    # Save models and hyperparameters
-    torch.save(G.state_dict(), f'saved_models/sde_gen_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt')
-    torch.save(D.state_dict(), f'saved_models/sde_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt')
-    with open(f'saved_models/sde_params_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.json', 'w') as f:
+    # Save training visualizations
+    iso = params['ISO']
+    varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
+    trainer.save_training_gif(dirname + f'training_cnn_{iso}_{varnames_abbrev}.gif')
+    # Saving individual frames from the GIF. We need to be careful to not save a ton of frames.
+    save_every = len(plotter.frames) // 20 + 1  # will save at most 20 frames
+    plotter.save_frames(dirname + f'training_progress/training_cnn_{iso}_{varnames_abbrev}.png',
+                        save_every=save_every)
+
+    # Save models
+    torch.save(G.state_dict(), dirname + f'cnn_gen_{iso}_{varnames_abbrev}.pt')
+    torch.save(D.state_dict(), dirname + f'cnn_dis_{iso}_{varnames_abbrev}.pt')
+
+    # Save parameters
+    params['total_epochs_trained'] += params['epochs']
+    params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # reuse the params_file name if it was specified, otherwise use the default naming scheme
+    filename = params_file if params_file is not None else dirname + f'params_cnn_{iso}_{varnames_abbrev}.json'
+    with open(filename, 'w') as f:
         json.dump(params, f)
 
 
 if __name__ == '__main__':
-    train_sdegan()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--params-file', type=str,
+                        help='path to a JSON file containing the training parameters for the model')
+    parser.add_argument('--warm-start', action='store_true', default=False,
+                        help='load saved models and continue training')
+    parser.add_argument('--epochs', type=int, default=100,
+                        help='number of epochs to train for')
+    args = parser.parse_args()
+
+    # NOTE: Instead of specifying a model in the arguments for the warm start case, we rely on the naming
+    # convention for the saved models and construct the model name from the parameters specified in
+    # the parameters file.
+
+    train_sdegan(params_file=args.params_file,
+                 warm_start=args.warm_start,
+                 epochs=args.epochs)
