@@ -105,6 +105,13 @@ class Trainer:
         g_loss.backward()
         self.G_opt.step()
 
+        # Print model parameters to check if updates for initial value embedding is actually happening
+        # for name, param in self.G._readout.named_parameters():
+        #     if not param.requires_grad:
+        #         continue
+        #     print(name, param.grad.view(-1))
+        #     # print(name, param.data)
+
         # Record loss
         self.losses['G'].append(g_loss.data.item())
 
@@ -120,7 +127,7 @@ class Trainer:
         for i, data in enumerate(data_loader):
             self.num_steps += 1
             self._critic_train_iteration(data)
-            if (i + 1) % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
+            if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
                 self._generator_train_iteration(data.size()[0])
 
     def train(self,
@@ -146,6 +153,13 @@ class Trainer:
         self.plot_every = plot_every or self.plot_every
         if self.plot_every > 0 and self.plotter is None:
             raise ValueError('If plot_every is > 0, a plotter must be passed to the trainer on initialization.')
+        # We only want to save more frames in the gif than we do stills, but we still want
+        # to save some stills during the training process so we can see how the model is improving.
+        # We only want to save ~30 still frames during training. For every time we add a frame to the
+        # gif, we need to decide if we should save a still frame.
+        gif_n_frames = epochs // self.plot_every  # number of frames in the gif
+        save_frame_every = gif_n_frames // 30  # save a frame every 30 frames
+        save_frame_counter = 0
 
         if self.plot_every > 0:
             # Fix latents to see how image generation improves during training
@@ -166,9 +180,11 @@ class Trainer:
 
             # Save progress
             if self.plot_every > 0 and (epoch + 1) % self.plot_every == 0:
-                self._plot_training_sample(epoch + 1)
+                save_frame_counter += 1
+                save_frame = save_frame_counter % save_frame_every == 0
+                self._plot_training_sample(epoch + 1, save_frame=save_frame)
 
-    def _plot_training_sample(self, epoch: int) -> None:
+    def _plot_training_sample(self, epoch: int, save_frame: bool = False) -> None:
         """
         Plot a sample of the training data.
 
@@ -178,7 +194,7 @@ class Trainer:
             The current epoch.
         """
         train_sample = self.G.transformed_sample(self._fixed_latents)
-        self.plotter.update(train_sample, self.losses, {'epoch': epoch})
+        self.plotter.update(train_sample, self.losses, {'epoch': epoch}, save_frame=save_frame)
 
     def sample_generator(self, num_samples: int) -> torch.Tensor:
         """
@@ -201,7 +217,7 @@ class Trainer:
     def save_training_gif(self, filename: str, duration: int = 5) -> None:
         """
         Save a GIF of the training progress.
-        
+
         Parameters
         ----------
         filename : str

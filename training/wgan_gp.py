@@ -12,7 +12,7 @@ class WGANGPTrainer(Trainer):
                  discriminator: torch.nn.Module,
                  g_optimizer: torch.optim.Optimizer,
                  d_optimizer: torch.optim.Optimizer,
-                 gp_weight: float = 10,
+                 penalty_weight: float = 10,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
                  device: str | None = None) -> None:
@@ -29,7 +29,7 @@ class WGANGPTrainer(Trainer):
             The optimizer for the generator.
         d_optimizer : torch.optim.Optimizer
             The optimizer for the discriminator.
-        gp_weight : int
+        penalty_weight : int
             The weight for the gradient penalty.
         critic_iterations : int
             The number of iterations to train the critic for each generator iteration.
@@ -40,13 +40,13 @@ class WGANGPTrainer(Trainer):
             defaulting to CPU.
         """
         super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter)
-        self.gp_weight = gp_weight
+        self.penalty_weight = penalty_weight
         self.losses |= {'GP': [], 'gradient_norm': []}  # add gradient penalty terms to losses dict
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:
         """
         Train the critic for one iteration.
-        
+
         Parameters
         ----------
         data : torch.Tensor
@@ -118,5 +118,5 @@ class WGANGPTrainer(Trainer):
         self.losses['gradient_norm'].append(gradients_norm.mean().data)
 
         # Return gradient penalty
-        penalty = self.gp_weight * ((gradients_norm - 1) ** 2).mean()
+        penalty = self.penalty_weight * ((gradients_norm - 1) ** 2).mean()
         return penalty

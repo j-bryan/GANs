@@ -65,7 +65,7 @@ def train_feedfoward():
 
     plotter = TrainingPlotter(['G', 'D'], varnames=params['variables'])
     trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
-                            gp_weight=params['gp_weight'],
+                            penalty_weight=params['gp_weight'],
                             critic_iterations=params['critic_iterations'],
                             plotter=plotter)
 

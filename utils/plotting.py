@@ -27,12 +27,13 @@ class TrainingPlotter:
         self.frames = []
         plt.ioff()
 
-    def update(self, samples, losses, meta):
+    def update(self, samples, losses, meta, save_frame=False):
         """
         Update the plot with the given samples and losses.
         :param samples: a list of samples from the generator
         :param losses: a dictionary of losses
         :param meta: a dictionary of metadata for the plot
+        :param save_frame: whether to save the still frame
         """
         fig, ax = plt.subplot_mosaic(self._mosaic,
                                      gridspec_kw={'width_ratios': meta.get('width_ratios', [2, 1])},
@@ -53,6 +54,8 @@ class TrainingPlotter:
         buf.seek(0)
         image = Image.open(buf)
         self.frames.append(image)
+        if save_frame:
+            image.save(f'./training_progress/{meta.get("epoch", len(self.frames) + 1)}.png')
         plt.close(fig)
 
     def save_gif(self, filename, duration=5):
@@ -82,12 +85,13 @@ class SDETrainingPlotter(TrainingPlotter):
     def __init__(self, loss_names, varnames: list = None) -> None:
         super().__init__(loss_names, varnames)
 
-    def update(self, samples, losses, meta):
+    def update(self, samples, losses, meta, save_frame=False):
         """
         Update the plot with the given samples and losses.
         :param samples: a list of samples from the generator
         :param losses: a dictionary of losses
         :param meta: a dictionary of metadata for the plot
+        :param save_frame: whether to save the still frame
         """
         fig, ax = plt.subplot_mosaic(self._mosaic,
                                      gridspec_kw={'width_ratios': meta.get('width_ratios', [2, 1])},
@@ -108,4 +112,6 @@ class SDETrainingPlotter(TrainingPlotter):
         buf.seek(0)
         image = Image.open(buf)
         self.frames.append(image)
+        if save_frame:
+            image.save(f'./training_progress/{meta.get("epoch", len(self.frames) + 1)}.png')
         plt.close(fig)

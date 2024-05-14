@@ -9,7 +9,7 @@ from torch.optim import Adam
 # from sklearn.compose import make_column_transformer
 
 from models.sde import Generator, Discriminator
-from training import WGANClipTrainer
+from training import WGANClipTrainer, WGANGPTrainer, WGANLPTrainer
 from dataloaders import get_sde_dataloader
 from utils.plotting import SDETrainingPlotter
 from utils import get_accelerator_device
@@ -17,7 +17,9 @@ from utils import get_accelerator_device
 
 def train_sdegan(params_file: str = None,
                  warm_start: bool = False,
-                 epochs: int = 100) -> None:
+                 epochs: int = 100,
+                 device: str | None = None,
+                 no_save: bool = False) -> None:
     """
     Sets up and trains an SDE-GAN.
 
@@ -42,28 +44,28 @@ def train_sdegan(params_file: str = None,
             'ISO':            'ERCOT',
             'variables':     ['WIND'],
             'time_features':  ['HOD'],
-            'initial_noise_size': 100,
-            'gen_noise_size':       4,
+            'initial_noise_size':   4,
+            'gen_noise_size':       8,
             'gen_hidden_size':      4,
             'gen_mlp_size':        64,
-            'gen_num_layers':       3,
+            'gen_num_layers':       1,
             'dis_hidden_size':      4,
-            'dis_mlp_size':       128,
-            'dis_num_layers':       3,
+            'dis_mlp_size':        64,
+            'dis_num_layers':       1,
             'critic_iterations':   10,
-            'batch_size':          32,
+            'batch_size':        1826,
             'gen_lr':            1e-5,
             'dis_lr':            1e-5,
             'gen_betas':   (0.5, 0.9),
             'dis_betas':   (0.5, 0.9),
-            'weight_clip':       0.03,
+            'weight_clip':        0.1,
             'epochs':          epochs,
             'total_epochs_trained': 0,
             'random_seed':      12345
         }
 
     # Find the most appropriate device for training
-    device = get_accelerator_device()
+    device = device or get_accelerator_device()
 
     if isinstance(params['variables'], str):
         params['variables'] = [params['variables']]
@@ -93,17 +95,35 @@ def train_sdegan(params_file: str = None,
     optimizer_G = Adam(G.parameters(), lr=params['gen_lr'], betas=params['gen_betas'])
     optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
 
+    if warm_start and params_file is not None:
+        # load the models based on the model naming scheme for CNN models:
+        #    saved_models/cnn/cnn_{gen/dis}_{ISO}_{var1}{var2}...{varn}.pt
+        # where {var1}...{varn} are the lowercase first letters of the variable names. This variable
+        # naming scheme isn't ideal since there can be collisions, but for the variables we're using
+        # it should be fine.
+        G.load_state_dict(torch.load(f'saved_models/sde/sde_gen_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
+        D.load_state_dict(torch.load(f'saved_models/sde/sde_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
+
     plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'])
-    trainer = WGANClipTrainer(G, D, optimizer_G, optimizer_D,
-                            weight_clip=params['weight_clip'],
-                            critic_iterations=params['critic_iterations'],
+    # trainer = WGANClipTrainer(G, D, optimizer_G, optimizer_D,
+    #                           weight_clip=params['weight_clip'],
+    #                           critic_iterations=params['critic_iterations'],
+    #                           plotter=plotter,
+    #                           device=device)
+    # trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
+    #                         plotter=plotter,
+    #                         device=device)
+    trainer = WGANLPTrainer(G, D, optimizer_G, optimizer_D,
                             plotter=plotter,
                             device=device)
 
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)
     trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=plot_every, print_every=print_every)
-            
+
+    if no_save:
+        return
+
     # Save the trained models, parameters, and visualizations
     dirname = 'saved_models/sde/'
     if not os.path.exists(dirname):
@@ -112,21 +132,21 @@ def train_sdegan(params_file: str = None,
     # Save training visualizations
     iso = params['ISO']
     varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
-    trainer.save_training_gif(dirname + f'training_cnn_{iso}_{varnames_abbrev}.gif')
+    trainer.save_training_gif(dirname + f'training_sde_{iso}_{varnames_abbrev}.gif')
     # Saving individual frames from the GIF. We need to be careful to not save a ton of frames.
     save_every = len(plotter.frames) // 20 + 1  # will save at most 20 frames
-    plotter.save_frames(dirname + f'training_progress/training_cnn_{iso}_{varnames_abbrev}.png',
+    plotter.save_frames(dirname + f'training_progress/training_sde_{iso}_{varnames_abbrev}.png',
                         save_every=save_every)
 
     # Save models
-    torch.save(G.state_dict(), dirname + f'cnn_gen_{iso}_{varnames_abbrev}.pt')
-    torch.save(D.state_dict(), dirname + f'cnn_dis_{iso}_{varnames_abbrev}.pt')
+    torch.save(G.state_dict(), dirname + f'sde_gen_{iso}_{varnames_abbrev}.pt')
+    torch.save(D.state_dict(), dirname + f'sde_dis_{iso}_{varnames_abbrev}.pt')
 
     # Save parameters
     params['total_epochs_trained'] += params['epochs']
     params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # reuse the params_file name if it was specified, otherwise use the default naming scheme
-    filename = params_file if params_file is not None else dirname + f'params_cnn_{iso}_{varnames_abbrev}.json'
+    filename = params_file if params_file is not None else dirname + f'params_sde_{iso}_{varnames_abbrev}.json'
     with open(filename, 'w') as f:
         json.dump(params, f)
 
@@ -140,6 +160,10 @@ if __name__ == '__main__':
                         help='load saved models and continue training')
     parser.add_argument('--epochs', type=int, default=100,
                         help='number of epochs to train for')
+    parser.add_argument('--device', type=str,
+                        help='device to train on')
+    parser.add_argument('--no-save', action='store_true', default=False,
+                        help='do not save the trained model')
     args = parser.parse_args()
 
     # NOTE: Instead of specifying a model in the arguments for the warm start case, we rely on the naming
@@ -148,4 +172,6 @@ if __name__ == '__main__':
 
     train_sdegan(params_file=args.params_file,
                  warm_start=args.warm_start,
-                 epochs=args.epochs)
+                 epochs=args.epochs,
+                 device=args.device,
+                 no_save=args.no_save)

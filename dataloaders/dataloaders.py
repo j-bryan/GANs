@@ -147,6 +147,6 @@ def get_sde_dataloader(iso: str,
     # ys_coeffs = torchcde.linear_interpolation_coeffs(ys)  # as per neural CDEs.
     # dataset = torch.utils.data.TensorDataset(ys_coeffs)
 
-    dataloader = torch.utils.data.DataLoader(vardata, batch_size=batch_size, shuffle=True)
+    dataloader = torch.utils.data.DataLoader(vardata, batch_size=batch_size, shuffle=True, pin_memory=True)
 
     return dataloader, preprocessor
