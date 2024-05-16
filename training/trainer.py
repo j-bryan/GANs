@@ -158,7 +158,7 @@ class Trainer:
         # We only want to save ~30 still frames during training. For every time we add a frame to the
         # gif, we need to decide if we should save a still frame.
         gif_n_frames = epochs // self.plot_every  # number of frames in the gif
-        save_frame_every = gif_n_frames // 30  # save a frame every 30 frames
+        save_frame_every = max(1, gif_n_frames // 30)  # save a frame every 30 frames
         save_frame_counter = 0
 
         if self.plot_every > 0:
