@@ -12,7 +12,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.compose import make_column_transformer
 
 from models.conv import Generator, Discriminator
-from training import WGANGPTrainer
+from training import WGANGPTrainer, WGANLPTrainer, WGANClipTrainer
 from dataloaders import get_dataloader
 from utils.plotting import TrainingPlotter
 from utils import get_accelerator_device
@@ -42,15 +42,15 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
         params = {
             'time_series_length': 24,  # number of nodes in generator output, discriminator input
             'ISO': 'ERCOT',
-            'variables': ['SOLAR', 'WIND'],
+            'variables': ['SOLAR'],
             'gen_input_size': 100,
             'gen_num_filters': 12,
             'gen_num_layers': 3,
             'dis_num_filters': 12,
             'dis_num_layers': 3,
-            'gp_weight': 10,
-            'critic_iterations': 10,
-            'batch_size': 32,
+            'penalty_weight': 10,
+            'critic_iterations': 1,
+            'batch_size': 1826,
             'gen_lr': 1e-4,
             'dis_lr': 1e-4,
             'gen_betas': (0.5, 0.9),
@@ -59,7 +59,7 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
             'total_epochs_trained': 0,  # to keep track of how many epochs have been trained in case of warm start
             'random_seed': 12345
         }
-    
+
     # Find the most appropriate device for training
     device = get_accelerator_device()
 
@@ -109,10 +109,17 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
     optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
 
     plotter = TrainingPlotter(['G', 'D'], varnames=params['variables'])
-    trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
-                            gp_weight=params['gp_weight'],
-                            critic_iterations=params['critic_iterations'],
-                            plotter=plotter)
+    # trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
+    #                         penalty_weight=params['penalty_weight'],
+    #                         critic_iterations=params['critic_iterations'],
+    #                         plotter=plotter)
+    # trainer = WGANLPTrainer(G, D, optimizer_G, optimizer_D,
+    #                         penalty_weight=params['penalty_weight'],
+    #                         critic_iterations=params['critic_iterations'],
+    #                         plotter=plotter)
+    trainer = WGANClipTrainer(G, D, optimizer_G, optimizer_D,
+                              critic_iterations=params['critic_iterations'],
+                              plotter=plotter)
 
     # Let's try to be smart about the frequency we print and plot. This should be proportional to the
     # number of epochs we're training for. We'll try doing up to 100 plots and about 30 prints
@@ -122,7 +129,7 @@ def train_cnn(params_file: str = None, warm_start: bool = False, epochs: int = 1
                   epochs=params['epochs'],
                   plot_every=plot_every,
                   print_every=print_every)
-            
+
     # Save the trained models, parameters, and visualizations
     dirname = 'saved_models/cnn/'
     if not os.path.exists(dirname):

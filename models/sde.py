@@ -4,6 +4,52 @@ import torchcde
 
 from models.layers import MLP
 from models.preprocessing import Preprocessor
+from models.initial_conditions import InitialCondition
+
+
+class DriftMLP(torch.nn.Module):
+    def __init__(self,
+                 state_size: int,
+                 mlp_size: int,
+                 num_layers: int,
+                 time_features: int = 1,
+                 activation='lipswish',
+                 final_activation='tanh'):
+        super().__init__()
+        self.state_size = state_size
+        self.time_features = time_features
+        self.model = MLP(in_size=state_size + time_features,
+                         out_size=state_size,
+                         mlp_size=mlp_size,
+                         num_layers=num_layers,
+                         activation=activation,
+                         final_activation=final_activation)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        return self.model(X)
+
+
+class DiffusionMLP(torch.nn.Module):
+    def __init__(self,
+                 state_size: int,
+                 noise_size: int,
+                 mlp_size: int,
+                 num_layers: int,
+                 time_features: int = 1,
+                 activation='lipswish',
+                 final_activation='tanh'):
+        super().__init__()
+        self.state_size = state_size
+        self.noise_size = noise_size
+        self.model = MLP(in_size=state_size + time_features,
+                         out_size=state_size * noise_size,
+                         mlp_size=mlp_size,
+                         num_layers=num_layers,
+                         activation=activation,
+                         final_activation=final_activation)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        return self.model(X)
 
 
 class GeneratorFunc(torch.nn.Module):
@@ -14,45 +60,39 @@ class GeneratorFunc(torch.nn.Module):
     noise_type = 'general'
 
     def __init__(self,
-                 noise_size: int,
-                 hidden_size: int,
-                 mlp_size: int,
-                 num_layers: int) -> None:
+                 drift_func: torch.nn.Module,
+                 diffusion_func: torch.nn.Module) -> None:
         """
         Constructor for the SDE
 
         Parameters
         ----------
-        noise_size : int
-            The dimensionality of the noise term.
-        hidden_size : int
-            The dimensionality of the hidden state.
-        mlp_size : int
-            The size of the hidden layers in the MLPs.
-        num_layers : int
-            The number of hidden layers in the MLPs.
+        drift_func : torch.nn.Module
+            The drift function of the SDE.
+        diffusion_func : torch.nn.Module
+            The diffusion function of the SDE.
         """
         super().__init__()
-        self._noise_size = noise_size
-        self._hidden_size = hidden_size
+        self._drift = drift_func
+        self._diffusion = diffusion_func
 
-        # General drift and diffusion functions modeled with MLPs.
-        self._drift = MLP(
-            in_size=1 + hidden_size,  # +1 for time dimension
-            out_size=hidden_size,
-            mlp_size=mlp_size,
-            num_layers=num_layers,
-            activation='lipswish',
-            final_activation='tanh'
-        )
-        self._diffusion = MLP(
-            in_size=1 + hidden_size,
-            out_size=hidden_size * noise_size,
-            mlp_size=mlp_size,
-            num_layers=num_layers,
-            activation='lipswish',
-            final_activation='tanh'
-        )
+        # # General drift and diffusion functions modeled with MLPs.
+        # self._drift = MLP(
+        #     in_size=1 + hidden_size,  # +1 for time dimension
+        #     out_size=hidden_size,
+        #     mlp_size=mlp_size,
+        #     num_layers=num_layers,
+        #     activation='lipswish',
+        #     final_activation='tanh'
+        # )
+        # self._diffusion = MLP(
+        #     in_size=1 + hidden_size,
+        #     out_size=hidden_size * noise_size,
+        #     mlp_size=mlp_size,
+        #     num_layers=num_layers,
+        #     activation='lipswish',
+        #     final_activation='tanh'
+        # )
 
     def f_and_g(self,
                 t: torch.Tensor,
@@ -81,7 +121,7 @@ class GeneratorFunc(torch.nn.Module):
         f = self._drift(tx)
         g = self._diffusion(tx)
         # reshape to match needed matrix dimensions
-        g = g.view(x.size(0), self._hidden_size, self._noise_size)
+        g = g.view(x.size(0), self._diffusion.state_size, self._diffusion.noise_size)
 
         return f, g
 
@@ -95,12 +135,11 @@ class Generator(torch.nn.Module, Preprocessor):
     It wraps a GeneratorFunc instance and provides the mechanisms for numerically solving the SDE.
     """
     def __init__(self,
-                 data_size: int,
-                 initial_noise_size: int,
-                 noise_size: int,
-                 hidden_size: int,
-                 mlp_size: int,
-                 num_layers: int,
+                 drift_func: torch.nn.Module,
+                 diffusion_func: torch.nn.Module,
+                 initial_condition: InitialCondition,
+                 readout: torch.nn.Module | None = None,
+                 initial_condition_embedding: torch.nn.Module | None = None,
                  time_steps: int = None) -> None:
         """
         Constructor for the SDE wrapper.
@@ -109,8 +148,8 @@ class Generator(torch.nn.Module, Preprocessor):
         ----------
         data_size : int
             The dimensionality of the data (number of variables).
-        initial_noise_size : int
-            The number of RNG samples used to initialize the SDE.
+        initial_condition : InitialCondition
+            An object that samples a defined initial condition for the SDE.
         noise_size : int
             The dimensionality of the noise term in the SDE (the Brownian motion term).
         hidden_size : int
@@ -122,22 +161,24 @@ class Generator(torch.nn.Module, Preprocessor):
         """
         super().__init__()
         Preprocessor.__init__(self)
-        self._initial_noise_size = initial_noise_size
-        self._hidden_size = hidden_size
+
+        # An initial condition object that samples from some distribution.
+        self._initial_condition = initial_condition if initial_condition_embedding is None else torch.nn.Identity()
 
         # MLP to map initial noise to the initial state of the SDE.
-        self._initial = MLP(
-            in_size=initial_noise_size,
-            out_size=hidden_size,
-            mlp_size=mlp_size,
-            num_layers=num_layers,
-            activation='lipswish',
-            final_activation='sigmoid'
-        )
+        self._initial = torch.nn.Identity() if initial_condition_embedding is None else initial_condition_embedding
+        # self._initial = MLP(
+        #     in_size=self._initial_condition.output_size,
+        #     out_size=hidden_size,
+        #     mlp_size=mlp_size,
+        #     num_layers=num_layers,
+        #     activation='lipswish',
+        #     final_activation='sigmoid'
+        # )
         # The SDE itself.
-        self._func = GeneratorFunc(noise_size, hidden_size, mlp_size, num_layers)
+        self._func = GeneratorFunc(drift_func, diffusion_func)
         # MLP to map the state of the SDE to the space of the data.
-        self._readout = torch.nn.Linear(hidden_size, data_size)
+        self._readout = torch.nn.Identity() if readout is None else readout
 
         # default number of time steps to evaluate the SDE at
         # handy to not have to pass this in every time so we can use the same training infrastructure
@@ -170,8 +211,8 @@ class Generator(torch.nn.Module, Preprocessor):
         ###################
         # Actually solve the SDE.
         ###################
-        batch_size = init_noise.size(0)
-        x0 = self._initial(init_noise)
+        batch_size = init_noise.size(0)  # (batch_size, initial_noise_size)
+        x0 = self._initial(init_noise)  # output has shape (batch_size, hidden_size)
 
         ###################
         # We use the reversible Heun method to get accurate gradients whilst using the adjoint method.
@@ -204,7 +245,7 @@ class Generator(torch.nn.Module, Preprocessor):
         torch.Tensor
             The samples. Has shape (num_samples, initial_noise_size).
         """
-        return torch.randn(num_samples, self._initial_noise_size)
+        return self._initial_condition.sample(num_samples)
 
     def transformed_sample(self, x: torch.Tensor) -> torch.Tensor:
         samples = self.forward(x).transpose(1, 2).cpu().data.numpy()
@@ -216,12 +257,33 @@ class Generator(torch.nn.Module, Preprocessor):
 # discriminator, just as in the "Neural SDEs as Infinite-Dimensional GANs" paper. (You could use other things as well,
 # but this is a natural choice.)
 ###################
-class DiscriminatorFunc(torch.nn.Module):
+class DiscriminatorMLP(torch.nn.Module):
     def __init__(self,
-                 data_size: int,
-                 hidden_size: int,
+                 gen_state_size: int,
+                 data_state_size: int,
                  mlp_size: int,
-                 num_layers: int) -> None:
+                 num_layers: int,
+                 time_features: int = 1,
+                 activation: str = 'lipswish',
+                 final_activation: str = 'sigmoid') -> None:
+        super().__init__()
+        self.gen_state_size = gen_state_size
+        self.data_state_size = data_state_size
+        self.time_features = time_features
+        self.model = MLP(in_size=time_features + gen_state_size,
+                         out_size=gen_state_size * (time_features + data_state_size),
+                         mlp_size=mlp_size,
+                         num_layers=num_layers,
+                         activation=activation,
+                         final_activation=final_activation)
+        print(self.model)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        return self.model(X)
+
+
+class DiscriminatorFunc(torch.nn.Module):
+    def __init__(self, func) -> None:
         """
         Constructor for the discriminator CDE.
 
@@ -238,18 +300,19 @@ class DiscriminatorFunc(torch.nn.Module):
             The number of hidden layers in the MLPs.
         """
         super().__init__()
-        self._data_size = data_size
-        self._hidden_size = hidden_size
 
         # tanh is important for model performance
-        self._module = MLP(
-            in_size=1 + hidden_size,
-            out_size=hidden_size * (1 + data_size),
-            mlp_size=mlp_size,
-            num_layers=num_layers,
-            activation='lipswish',
-            final_activation='tanh'
-        )
+        self._module = func
+        self._hidden_size = func.gen_state_size
+        self._data_size = func.data_state_size + func.time_features
+        # self._module = MLP(
+        #     in_size=1 + hidden_size,
+        #     out_size=hidden_size * (1 + data_size),
+        #     mlp_size=mlp_size,
+        #     num_layers=num_layers,
+        #     activation='lipswish',
+        #     final_activation='tanh'
+        # )
 
     def forward(self,
                 t: torch.Tensor,
@@ -273,15 +336,19 @@ class DiscriminatorFunc(torch.nn.Module):
         # h has shape (batch_size, hidden_size)
         t = t.expand(h.size(0), 1)
         th = torch.cat([t, h], dim=1)
-        return self._module(th).view(h.size(0), self._hidden_size, 1 + self._data_size)
+        return self._module(th).view(h.size(0), self._hidden_size, self._data_size)
 
 
 class Discriminator(torch.nn.Module):
+    # def __init__(self,
+    #              data_size: int,
+    #              hidden_size: int,
+    #              mlp_size: int,
+    #              num_layers: int):
     def __init__(self,
-                 data_size: int,
-                 hidden_size: int,
-                 mlp_size: int,
-                 num_layers: int):
+                 discr_func: torch.nn.Module,
+                 inital_condition_embedding: torch.nn.Module | None = None,
+                 readout: torch.nn.Module | None = None) -> None:
         """
         Constructor for the discriminator wrapper.
 
@@ -300,18 +367,21 @@ class Discriminator(torch.nn.Module):
         super().__init__()
 
         # MLP to map from data space to latent space of discriminator CDE.
-        self._initial = MLP(
-            1 + data_size,
-            hidden_size,
-            mlp_size,
-            num_layers,
-            activation='lipswish',
-            final_activation='sigmoid'
-        )
+        self._initial = torch.nn.Identity() if inital_condition_embedding is None else inital_condition_embedding
+        # self._initial = MLP(
+        #     1 + data_size,
+        #     hidden_size,
+        #     mlp_size,
+        #     num_layers,
+        #     activation='lipswish',
+        #     final_activation='sigmoid'
+        # )
         # The discriminator CDE
-        self._func = DiscriminatorFunc(data_size, hidden_size, mlp_size, num_layers)
+        # self._func = DiscriminatorFunc(data_size, hidden_size, mlp_size, num_layers)
+        self._func = DiscriminatorFunc(discr_func)
         # Linear readout layer
-        self._readout = torch.nn.Linear(hidden_size, 1)
+        # self._readout = torch.nn.Linear(hidden_size, 1)
+        self._readout = torch.nn.Identity() if readout is None else readout
 
     def forward(self, ys_coeffs: torch.Tensor) -> torch.Tensor:
         """
