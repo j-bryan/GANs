@@ -11,7 +11,7 @@ class GeneratorFunc(torch.nn.Module):
         The generator SDE. The drift and diffusion functions as MLPs.
     """
     sde_type = 'stratonovich'
-    noise_type = 'general'
+    noise_type = 'diagonal'
 
     def __init__(self,
                  noise_size: int,
@@ -47,7 +47,7 @@ class GeneratorFunc(torch.nn.Module):
         )
         self._diffusion = MLP(
             in_size=1 + hidden_size,
-            out_size=hidden_size * noise_size,
+            out_size=hidden_size,
             mlp_size=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
@@ -81,7 +81,7 @@ class GeneratorFunc(torch.nn.Module):
         f = self._drift(tx)
         g = self._diffusion(tx)
         # reshape to match needed matrix dimensions
-        g = g.view(x.size(0), self._hidden_size, self._noise_size)
+        # g = g.view(x.size(0), self._hidden_size, self._noise_size)
 
         return f, g
 
@@ -145,7 +145,9 @@ class Generator(torch.nn.Module, Preprocessor):
 
     def forward(self,
                 init_noise: torch.Tensor,
-                ts: torch.Tensor = None) -> torch.Tensor:
+                ts: torch.Tensor = None,
+                t_offset: float = 0.0,
+                return_fg: bool = False) -> torch.Tensor:
         """
         Forward pass of the SDE.
 
@@ -181,12 +183,34 @@ class Generator(torch.nn.Module, Preprocessor):
         xs = xs.transpose(0, 1)
         ys = self._readout(xs)
 
+        if return_fg:
+            f = torch.zeros_like(xs)
+            g = torch.zeros_like(xs)
+            f_offset = torch.zeros_like(xs)
+            g_offset = torch.zeros_like(xs)
+            # t = t.expand(x.size(0), 1)
+            # tx = torch.cat([t, x], dim=1)
+            tx = torch.cat([ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1), xs], dim=2)
+            for i in range(tx.size(1)):
+                # f[i], g[i] = self._func.f_and_g(ts[i], xs[i])
+                txi = tx[:, i, :]
+                # fi, gi = self._func.f_and_g(ts[i], xs[i])
+                fi = self._func._drift(txi)
+                gi = self._func._diffusion(txi)
+                f_offset[i], g_offset[i] = self._func.f_and_g(ts[i] + t_offset, xs[i])
+            f_periodicity_diff = f - f_offset
+            g_periodicity_diff = g - g_offset
+
         ###################
         # Normalise the data to the form that the discriminator expects, in particular including time as a channel.
         ###################
         ts = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
         # interpolate to ensure we have data at the correct times
         ty_generated = torchcde.linear_interpolation_coeffs(torch.cat([ts, ys], dim=2))
+
+        if return_fg:
+            return ty_generated, f_periodicity_diff, g_periodicity_diff
+
         return ty_generated
 
     def sample_latent(self,
@@ -337,4 +361,25 @@ class Discriminator(torch.nn.Module):
                              backend='torchsde', dt=1.0, adjoint_method='adjoint_reversible_heun',
                              adjoint_params=(ys_coeffs,) + tuple(self._func.parameters()))
         score = self._readout(hs[:, -1])
-        return score
+        return score.mean()
+
+
+class DropFirstValue(torch.nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x[..., 1:].squeeze()
+
+
+class DiscriminatorSimple(torch.nn.Module):
+    def __init__(self, data_size: int, time_size: int, num_layers: int, num_units: int):
+        super().__init__()
+        layers = [DropFirstValue(), torch.nn.Flatten()]
+        last_size = data_size * time_size
+        for _ in range(num_layers):
+            layers.append(torch.nn.Linear(last_size, num_units))
+            layers.append(torch.nn.ReLU())
+            last_size = num_units
+        layers.append(torch.nn.Linear(last_size, 1))
+        self.model = torch.nn.Sequential(*layers)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        return self.model(X)

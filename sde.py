@@ -8,7 +8,7 @@ from torch.optim import Adam
 # from sklearn.pipeline import make_pipeline
 # from sklearn.compose import make_column_transformer
 
-from models.sde import Generator, Discriminator
+from models.sde import Generator, Discriminator, DiscriminatorSimple
 from training import WGANClipTrainer, WGANGPTrainer, WGANLPTrainer
 from dataloaders import get_sde_dataloader
 from utils.plotting import SDETrainingPlotter
@@ -44,11 +44,11 @@ def train_sdegan(params_file: str = None,
             'ISO':            'ERCOT',
             'variables':     ['WIND'],
             'time_features':  ['HOD'],
-            'initial_noise_size':   4,
-            'gen_noise_size':       8,
-            'gen_hidden_size':      4,
+            'initial_noise_size':   1,
+            'gen_noise_size':       4,
+            'gen_hidden_size':     16,
             'gen_mlp_size':        64,
-            'gen_num_layers':       1,
+            'gen_num_layers':       3,
             'dis_hidden_size':      4,
             'dis_mlp_size':        64,
             'dis_num_layers':       1,
@@ -79,18 +79,22 @@ def train_sdegan(params_file: str = None,
                   mlp_size=params['gen_mlp_size'],
                   num_layers=params['gen_num_layers'],
                   time_steps=params['time_series_length']).to(device)
-    D = Discriminator(data_size=len(params['variables']),
-                      hidden_size=params['dis_hidden_size'],
-                      mlp_size=params['dis_mlp_size'],
-                      num_layers=params['dis_num_layers']).to(device)
+    # D = Discriminator(data_size=len(params['variables']),
+    #                   hidden_size=params['dis_hidden_size'],
+    #                   mlp_size=params['dis_mlp_size'],
+    #                   num_layers=params['dis_num_layers']).to(device)
+    D = DiscriminatorSimple(data_size=len(params['variables']),
+                            time_size=params['time_series_length'],
+                            num_layers=5,
+                            num_units=200).to(device)
     dataloader, pipeline = get_sde_dataloader(iso=params['ISO'],
                                               varname=params['variables'],
                                               segment_size=params['time_series_length'],
                                               time_features=params['time_features'],
                                               batch_size=params['batch_size'],)
-    if params['critic_iterations'] > len(dataloader):
-        params['critic_iterations'] = len(dataloader)
-        print('Critic iterations reduced to number of batches in dataset:', params['critic_iterations'])
+    # if params['critic_iterations'] > len(dataloader):
+    #     params['critic_iterations'] = len(dataloader)
+    #     print('Critic iterations reduced to number of batches in dataset:', params['critic_iterations'])
 
     optimizer_G = Adam(G.parameters(), lr=params['gen_lr'], betas=params['gen_betas'])
     optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
@@ -110,12 +114,13 @@ def train_sdegan(params_file: str = None,
     #                           critic_iterations=params['critic_iterations'],
     #                           plotter=plotter,
     #                           device=device)
-    # trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
-    #                         plotter=plotter,
-    #                         device=device)
-    trainer = WGANLPTrainer(G, D, optimizer_G, optimizer_D,
+    trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
                             plotter=plotter,
                             device=device)
+    # trainer = WGANLPTrainer(G, D, optimizer_G, optimizer_D,
+    #                         critic_iterations=params['critic_iterations'],
+    #                         plotter=plotter,
+    #                         device=device)
 
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)

@@ -39,7 +39,7 @@ class WGANGPTrainer(Trainer):
             The device to use for training. If None, a GPU is used if available, otherwise
             defaulting to CPU.
         """
-        super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter)
+        super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter, device)
         self.penalty_weight = penalty_weight
         self.losses |= {'GP': [], 'gradient_norm': []}  # add gradient penalty terms to losses dict
 
