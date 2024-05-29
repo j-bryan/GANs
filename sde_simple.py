@@ -4,12 +4,10 @@ from datetime import datetime
 
 import torch
 from torch.optim import Adam
-# from sklearn.preprocessing import RobustScaler
-# from sklearn.pipeline import make_pipeline
-# from sklearn.compose import make_column_transformer
 
-from models.sde import Generator, Discriminator, DiscriminatorSimple
-from training import WGANClipTrainer, WGANGPTrainer, WGANLPTrainer
+from models.sde_no_embed import Generator, DiscriminatorSimple, SampledInitialCondition
+from models.forcing import SolarMultForcing, WindMultForcing, DawnDuskSampler, SolarAddForcing
+from training import WGANGPTrainer
 from dataloaders import get_sde_dataloader
 from utils.plotting import SDETrainingPlotter
 from utils import get_accelerator_device
@@ -44,9 +42,6 @@ def train_sdegan(params_file: str = None,
             'ISO':            'ERCOT',
             'variables':     ['TOTALLOAD', 'WIND', 'SOLAR'],
             'time_features':  ['HOD'],
-            'initial_noise_size':   1,
-            'gen_noise_size':       4,
-            'gen_hidden_size':     16,
             'gen_mlp_size':        64,
             'gen_num_layers':       3,
             'dis_hidden_size':      4,
@@ -72,30 +67,37 @@ def train_sdegan(params_file: str = None,
     # seed for reproducibility
     torch.manual_seed(params['random_seed'])
 
-    G = Generator(data_size=len(params['variables']),
-                  initial_noise_size=params['initial_noise_size'],
-                  noise_size=params['gen_noise_size'],
-                  hidden_size=params['gen_hidden_size'],
-                  mlp_size=params['gen_mlp_size'],
-                  num_layers=params['gen_num_layers'],
-                  time_steps=params['time_series_length']).to(device)
-    # D = Discriminator(data_size=len(params['variables']),
-    #                   hidden_size=params['dis_hidden_size'],
-    #                   mlp_size=params['dis_mlp_size'],
-    #                   num_layers=params['dis_num_layers']).to(device)
-    D = DiscriminatorSimple(data_size=len(params['variables']),
-                            time_size=params['time_series_length'],
-                            num_layers=5,
-                            num_units=200).to(device)
     dataloader, transformer = get_sde_dataloader(iso=params['ISO'],
                                                  varname=params['variables'],
                                                  segment_size=params['time_series_length'],
                                                  time_features=params['time_features'],
                                                  batch_size=params['batch_size'],
                                                  device=device)
-    # if params['critic_iterations'] > len(dataloader):
-    #     params['critic_iterations'] = len(dataloader)
-    #     print('Critic iterations reduced to number of batches in dataset:', params['critic_iterations'])
+
+    solar = dataloader.dataset[..., params["variables"].index("SOLAR") + 1]
+    solar_forcing = SolarMultForcing()
+    solar_add_forcing = SolarAddForcing()
+    wind_forcing = WindMultForcing()
+    mult_forcing = {"SOLAR": solar_forcing,
+                    "WIND": wind_forcing}
+    add_forcing = {"SOLAR": solar_add_forcing}
+
+    initial_condition = SampledInitialCondition(data=dataloader.dataset[..., 1:])
+    state_size = len(params['variables'])
+
+    G = Generator(initial_condition=initial_condition,
+                  state_size=state_size,
+                  mlp_size=params['gen_mlp_size'],
+                  num_layers=params['gen_num_layers'],
+                  time_steps=params['time_series_length'],
+                  varnames=params["variables"],
+                  mult_forcing=mult_forcing,
+                  add_forcing=add_forcing,
+                  dawn_dusk_sampler=DawnDuskSampler(solar)).to(device)
+    D = DiscriminatorSimple(data_size=state_size,
+                            time_size=params['time_series_length'],
+                            num_layers=5,
+                            num_units=200).to(device)
 
     optimizer_G = Adam(G.parameters(), lr=params['gen_lr'], betas=params['gen_betas'])
     optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
@@ -110,18 +112,9 @@ def train_sdegan(params_file: str = None,
         D.load_state_dict(torch.load(f'saved_models/sde/sde_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
 
     plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'], transformer=transformer)
-    # trainer = WGANClipTrainer(G, D, optimizer_G, optimizer_D,
-    #                           weight_clip=params['weight_clip'],
-    #                           critic_iterations=params['critic_iterations'],
-    #                           plotter=plotter,
-    #                           device=device)
     trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
                             plotter=plotter,
                             device=device)
-    # trainer = WGANLPTrainer(G, D, optimizer_G, optimizer_D,
-    #                         critic_iterations=params['critic_iterations'],
-    #                         plotter=plotter,
-    #                         device=device)
 
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)
@@ -138,10 +131,10 @@ def train_sdegan(params_file: str = None,
     # Save training visualizations
     iso = params['ISO']
     varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
-    trainer.save_training_gif(dirname + f'training_sde_{iso}_{varnames_abbrev}.gif')
+    trainer.save_training_gif(dirname + f'training_sde_noembed_{iso}_{varnames_abbrev}.gif')
     # Saving individual frames from the GIF. We need to be careful to not save a ton of frames.
     save_every = len(plotter.frames) // 20 + 1  # will save at most 20 frames
-    plotter.save_frames(dirname + f'training_progress/training_sde_{iso}_{varnames_abbrev}.png',
+    plotter.save_frames(dirname + f'training_progress/training_sde_noembed_{iso}_{varnames_abbrev}.png',
                         save_every=save_every)
 
     # Save models

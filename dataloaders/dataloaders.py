@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from sklearn.pipeline import Pipeline
+from dataloaders.preprocessing import StandardScaler, FunctionTransformer, InvertibleColumnTransformer
 
 from dataloaders.data.meta import meta
 
@@ -12,7 +13,6 @@ class TimeSeriesDataset(torch.utils.data.Dataset):
     def __init__(self,
                  data: pd.DataFrame,
                  segment_size: int,
-                 preprocessor: Pipeline = None,
                  transpose: bool = False) -> None:
         data = data.values.astype(np.float32)
         data = np.atleast_2d(data)
@@ -86,9 +86,9 @@ def get_dataloader(iso: str,
 def get_sde_dataloader(iso: str,
                        varname: Union[list[str], str],
                        segment_size: int = 24,
-                       time_features: Union[list[str], str] = None,
+                       time_features: Union[list[str], str] = ["HOD"],
                        batch_size: int = 32,
-                       preprocessor: Pipeline = None) -> DataLoader:
+                       device: str = "cpu") -> DataLoader:
     """
     Creates a pytorch dataloader from the specified data. Differs from the standard dataloader in
     that it interpolates the data for use with continuous-time models (e.g. SDEs).
@@ -111,42 +111,30 @@ def get_sde_dataloader(iso: str,
     dataloader : DataLoader
         A pytorch DataLoader object.
     """
-    # lazy imports
-    import torchcde
+    if time_features != ["HOD"]:
+        raise ValueError("Only HOD is supported for time_features.")
 
-    vardata = _load_data(iso, varname, segment_size, preprocessor)
-    vardata.transpose = True
+    data = pd.read_csv(f"dataloaders/data/{iso.lower()}.csv")[varname]
+    # Set solar values close to zero to zero
+    data["SOLAR"] = data["SOLAR"].apply(lambda x: 0 if x < 1e-2 else x)
+    data = data.to_numpy()
+    hour_of_day = np.arange(len(data)) % 24
+    data = np.hstack([hour_of_day.reshape(-1, 1), data])
+    data = torch.Tensor(data.reshape(-1, segment_size, len(varname) + 1))
 
-    if time_features is not None:
-        # hard-coded meta data for more info on the ISO data found in dataloaders/data/meta.py
-        start_dt = meta[iso]['start_dt']
-        end_dt = meta[iso]['end_dt']
-        freq = meta[iso]['freq']
-        date_range = pd.date_range(start_dt, end_dt, freq=freq)
+    load_transformer = StandardScaler()
+    wind_transformer  = FunctionTransformer(func=None, inverse_func=lambda x: torch.clip(x, 0, 1))
+    solar_transformer = FunctionTransformer(func=None, inverse_func=lambda x: torch.clip(x, 0, 1))
+    transformer = InvertibleColumnTransformer(
+        transformers={
+            "TOTALLOAD": load_transformer,
+            # "WIND": wind_transformer,
+            # "SOLAR": solar_transformer
+        },
+        columns=time_features + varname
+    )
+    Xt = transformer.fit_transform(data)
 
-        if isinstance(time_features, str):
-            time_features = [time_features]
+    dataloader = torch.utils.data.DataLoader(Xt.to(device), batch_size=batch_size, shuffle=True)
 
-        for feat in time_features[::-1]:
-            if feat == 'HOD':
-                feat_data = np.array(date_range.hour)
-            elif feat == 'DOW':
-                feat_data = np.array(date_range.dayofweek)
-            elif feat == 'MOY':
-                feat_data = np.array(date_range.month)
-            else:
-                raise ValueError(f'Invalid time feature {feat}. Please choose from "HOD", "DOW", or "MOY".')
-            vardata.data = np.vstack([feat_data, vardata.data])
-
-    # TODO: need to interpolate the data to get a continuous-time representation?
-    # data = np.stack([hours, wind], axis=1)
-    # data = np.array(np.split(data, dataset_size))
-    # ys = torch.tensor(data, dtype=torch.float32, device=device)
-    # ts = torch.linspace(0, t_size - 1, t_size, device=device)
-    # data_size = ys.size(-1) - 1  # How many channels the data has (not including time, hence the minus one).
-    # ys_coeffs = torchcde.linear_interpolation_coeffs(ys)  # as per neural CDEs.
-    # dataset = torch.utils.data.TensorDataset(ys_coeffs)
-
-    dataloader = torch.utils.data.DataLoader(vardata, batch_size=batch_size, shuffle=True, pin_memory=True)
-
-    return dataloader, preprocessor
+    return dataloader, transformer

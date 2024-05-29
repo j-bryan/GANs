@@ -95,7 +95,8 @@ class Trainer:
 
         # Get generated data
         # generated_data = self.sample_generator(batch_size)
-        generated_data, f_periodicity_diff, g_periodicity_diff = self.sample_generator(batch_size, t_offset=24, return_fg=True)
+        # generated_data, f_periodicity_diff, g_periodicity_diff = self.sample_generator(batch_size, t_offset=24, return_fg=True)
+        generated_data = self.sample_generator(batch_size)
 
         # Calculate loss and optimize
         # The generator outputs a number between 0 and 1, corresponding to the probability that the sample is real.
@@ -103,8 +104,8 @@ class Trainer:
         # We want to maximize that, so we flip the sign.
         d_generated = self.D(generated_data)
         # We want to enforce periodicity (period of 24) in the drift and diffusion functions of G.
-        # g_loss = -d_generated.mean()
-        g_loss = -d_generated.mean() + torch.norm(f_periodicity_diff, 2) + torch.norm(g_periodicity_diff, 2)
+        g_loss = -d_generated.mean()
+        # g_loss = -d_generated.mean() + torch.norm(f_periodicity_diff, 2) + torch.norm(g_periodicity_diff, 2)
         g_loss.backward()
         self.G_opt.step()
 
@@ -129,12 +130,12 @@ class Trainer:
         """
         for i, data in enumerate(data_loader):
             self.num_steps += 1
-            # self._critic_train_iteration(data)
-            # if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
-            #     self._generator_train_iteration(data.size()[0])
-            for i in range(self.critic_iterations):
-                self._critic_train_iteration(data)
-            self._generator_train_iteration(data.size()[0])
+            self._critic_train_iteration(data)
+            if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
+                self._generator_train_iteration(data.size()[0])
+            # for i in range(self.critic_iterations):
+            #     self._critic_train_iteration(data)
+            # self._generator_train_iteration(data.size()[0])
 
     def train(self,
               data_loader: torch.utils.data.DataLoader,
@@ -199,10 +200,10 @@ class Trainer:
         epoch : int
             The current epoch.
         """
-        train_sample = self.G.transformed_sample(self._fixed_latents)
+        train_sample = self.G(self._fixed_latents)
         self.plotter.update(train_sample, self.losses, {'epoch': epoch}, save_frame=save_frame)
 
-    def sample_generator(self, num_samples: int, t_offset: int = 0, return_fg: bool = False) -> torch.Tensor:
+    def sample_generator(self, num_samples: int) -> torch.Tensor:
         """
         Sample from the generator.
 
@@ -216,9 +217,7 @@ class Trainer:
         generated_data : torch.Tensor
             The generated data.
         """
-        latent_samples = Variable(self.G.sample_latent(num_samples)).to(self.device)
-        generated_data = self.G(latent_samples, None, t_offset, return_fg)
-        return generated_data
+        return self.G.sample(num_samples)
 
     def save_training_gif(self, filename: str, duration: int = 5) -> None:
         """

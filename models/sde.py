@@ -89,7 +89,7 @@ class GeneratorFunc(torch.nn.Module):
 ###################
 # Now we wrap it up into something that computes the SDE.
 ###################
-class Generator(torch.nn.Module, Preprocessor):
+class Generator(torch.nn.Module):
     """"
     Wrapper for the generator SDE. This defines the methods familiar to pytorch, such as forward.
     It wraps a GeneratorFunc instance and provides the mechanisms for numerically solving the SDE.
@@ -121,7 +121,6 @@ class Generator(torch.nn.Module, Preprocessor):
             The number of hidden layers in the MLPs.
         """
         super().__init__()
-        Preprocessor.__init__(self)
         self._initial_noise_size = initial_noise_size
         self._hidden_size = hidden_size
 
@@ -230,9 +229,9 @@ class Generator(torch.nn.Module, Preprocessor):
         """
         return torch.randn(num_samples, self._initial_noise_size)
 
-    def transformed_sample(self, x: torch.Tensor) -> torch.Tensor:
-        samples = self.forward(x).transpose(1, 2).cpu().data.numpy()
-        return self.preprocessor.inverse_transform(samples)
+    def sample(self, num_samples: int = 1) -> torch.Tensor:
+        latent = self.sample_latent(num_samples)
+        return self(latent)
 
 
 ###################
