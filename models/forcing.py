@@ -57,8 +57,8 @@ class SolarMultForcing(torch.nn.Module):
         self.threshold = FastHardSigmoid(slope=1.0)
 
     def forward(self, t: torch.Tensor, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        t_dawn = kwargs['t_dawn']
-        t_dusk = kwargs['t_dusk']
+        t_dawn = kwargs['t_dawn'] - 1
+        t_dusk = kwargs['t_dusk'] - 1
 
         # During the day, the drift term is multiplied by a cosine function that is at its maximum
         # absolute values at dawn and dusk.
@@ -74,12 +74,13 @@ class SolarAddForcing(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.threshold = FastHardSigmoid(slope=1.0)
-        self.nighttime_mean_reversion = torch.nn.Parameter(torch.tensor(0.1))
+        # chosen because it corresponds to a reduction of 2 orders of magnitude in 1 time unit, but we'll let the optimizer tune it
+        self.nighttime_mean_reversion = torch.nn.Parameter(torch.tensor(-4.605))
 
     def forward(self, t: torch.Tensor, x: torch.Tensor, **kwargs) -> torch.Tensor:
         t_dawn = kwargs['t_dawn']
         t_dusk = kwargs['t_dusk']
-        drift = self.nighttime_mean_reversion * x * self.threshold(t_dawn - t) * self.threshold(t - t_dusk)
+        drift = self.nighttime_mean_reversion * x * (self.threshold(t_dawn - t) + self.threshold(t - t_dusk))
         diffusion = torch.zeros_like(x)
         return drift, diffusion
 

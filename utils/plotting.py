@@ -2,7 +2,10 @@ import os
 import io
 from PIL import Image
 import imageio
+import matplotlib
 import matplotlib.pyplot as plt
+
+matplotlib.use('Agg')
 
 
 class TrainingPlotter:

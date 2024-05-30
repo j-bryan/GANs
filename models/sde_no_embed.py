@@ -145,7 +145,7 @@ class GeneratorFunc(torch.nn.Module):
 
         if t.ndim > 1:
             t = t.squeeze()
-
+        
         for varname, forcing in self.mult_forcing.items():
             idx = self.varnames.index(varname)
             drift_mult, diffusion_mult = forcing(t, x[..., idx], **kwargs)
@@ -154,9 +154,9 @@ class GeneratorFunc(torch.nn.Module):
 
         for varname, forcing in self.add_forcing.items():
             idx = self.varnames.index(varname)
-            drift_mult, diffusion_mult = forcing(t, x[..., idx], **kwargs)
-            f[:, idx] += drift_mult
-            g[:, idx] += diffusion_mult
+            drift_add, diffusion_add = forcing(t, x[..., idx], **kwargs)
+            f[:, idx] += drift_add
+            g[:, idx] += diffusion_add
 
         if torch.isnan(f).any() or torch.isnan(g).any():
             # Find which row has the NaN
@@ -257,6 +257,8 @@ class Generator(torch.nn.Module):
         ty_generated : torch.Tensor
             The values of the SDE at the given times. Has shape (batch_size, t_size, data_size).
         """
+        device = initial_condition.device
+
         # ts has shape (t_size,) and corresponds to the points we want to evaluate the SDE at.
         if ts is None and self._time_steps is None:
             raise ValueError('Either pass in ts or set time_steps in the constructor!')
@@ -267,7 +269,7 @@ class Generator(torch.nn.Module):
         if self._dawn_dusk_sampler is not None:
             t_dawn, t_dusk = self._dawn_dusk_sampler.sample(batch_size)
             # Pack the dawn and dusk times into the initial condition
-            initial_condition = torch.cat([initial_condition, t_dawn.unsqueeze(1), t_dusk.unsqueeze(1)], dim=1)
+            initial_condition = torch.cat([initial_condition, t_dawn.unsqueeze(1).to(device), t_dusk.unsqueeze(1).to(device)], dim=1)
 
         ###################
         # We use the reversible Heun method to get accurate gradients whilst using the adjoint method.
