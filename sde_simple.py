@@ -1,11 +1,12 @@
 import os
 import json
 from datetime import datetime
+import fire
 
 import torch
 from torch.optim import Adam
 
-from models.sde_no_embed import Generator, DiscriminatorSimple, SampledInitialCondition
+from models.sde_no_embed import Generator, DiscriminatorSimple, SampledInitialCondition, ColumnwiseInitialCondition, RandomInitialCondition
 from models.forcing import SolarMultForcing, WindMultForcing, DawnDuskSampler, SolarAddForcing
 from training import WGANGPTrainer
 from dataloaders import get_sde_dataloader
@@ -13,10 +14,10 @@ from utils.plotting import SDETrainingPlotter
 from utils import get_accelerator_device
 
 
-def train_sdegan(params_file: str = None,
+def train_sdegan(params_file: str = "",
                  warm_start: bool = False,
                  epochs: int = 100,
-                 device: str | None = None,
+                 device: str = "cpu",
                  no_save: bool = False) -> None:
     """
     Sets up and trains an SDE-GAN.
@@ -33,7 +34,7 @@ def train_sdegan(params_file: str = None,
         The number of epochs to train for.
     """
     # Set up training. All of these parameters are saved along with the models so the training can be reproduced.
-    if params_file is not None:
+    if params_file:
         with open(params_file, 'r') as f:
             params = json.load(f)
     else:
@@ -42,9 +43,8 @@ def train_sdegan(params_file: str = None,
             'ISO':            'ERCOT',
             'variables':     ['TOTALLOAD', 'WIND', 'SOLAR'],
             'time_features':  ['HOD'],
-            'gen_mlp_size':        64,
+            'gen_mlp_size':       256,
             'gen_num_layers':       3,
-            'dis_hidden_size':      4,
             'dis_mlp_size':        64,
             'dis_num_layers':       1,
             'critic_iterations':   10,
@@ -53,7 +53,7 @@ def train_sdegan(params_file: str = None,
             'dis_lr':            1e-4,
             'gen_betas':   (0.5, 0.9),
             'dis_betas':   (0.5, 0.9),
-            'weight_clip':        0.1,
+            'gp_weight':         10.0,
             'epochs':          epochs,
             'total_epochs_trained': 0,
             'random_seed':      12345
@@ -75,24 +75,39 @@ def train_sdegan(params_file: str = None,
                                                  device=device)
 
     solar = dataloader.dataset[..., params["variables"].index("SOLAR") + 1]
+    # Some of the data is bad! Solar values must be 0 at night.
+    bad_rows, _ = torch.where(solar[:, [0, 1, 2, 21, 22, 23]] > 1e-6)
+    bad_rows = bad_rows.unique()
+    all_rows = torch.arange(solar.size(0))
+    good_rows = all_rows[~torch.isin(all_rows, bad_rows)]
+    # Drop the bad rows
+    solar = solar[good_rows]
+    # Remake the dataloader
+    dataset = dataloader.dataset[good_rows]
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=params['batch_size'], shuffle=True)
+
     solar_forcing = SolarMultForcing()
     solar_add_forcing = SolarAddForcing()
     wind_forcing = WindMultForcing()
-    mult_forcing = {"SOLAR": solar_forcing,
-                    "WIND": wind_forcing}
-    add_forcing = {"SOLAR": solar_add_forcing}
-
-    initial_condition = SampledInitialCondition(data=dataloader.dataset[..., 1:])
+    # mult_forcing = {"SOLAR": solar_forcing,
+    #                 "WIND": wind_forcing}
+    # add_forcing = {"SOLAR": solar_add_forcing}
+    initial_condition = SampledInitialCondition(data=dataloader.dataset[..., [1, 2]])
+    aux_solar_initial_condition = RandomInitialCondition(dim=1, low=0.2, high=0.8)
+    all_ic = ColumnwiseInitialCondition([
+        (initial_condition, [0, 1]),
+        (aux_solar_initial_condition, [2])
+    ])
     state_size = len(params['variables'])
 
-    G = Generator(initial_condition=initial_condition,
+    G = Generator(initial_condition=all_ic,
                   state_size=state_size,
                   mlp_size=params['gen_mlp_size'],
                   num_layers=params['gen_num_layers'],
                   time_steps=params['time_series_length'],
                   varnames=params["variables"],
-                  mult_forcing=mult_forcing,
-                  add_forcing=add_forcing,
+                #   mult_forcing=mult_forcing,
+                #   add_forcing=add_forcing,
                   dawn_dusk_sampler=DawnDuskSampler(solar)).to(device)
     D = DiscriminatorSimple(data_size=state_size,
                             time_size=params['time_series_length'],
@@ -114,7 +129,8 @@ def train_sdegan(params_file: str = None,
     plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'], transformer=transformer)
     trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
                             plotter=plotter,
-                            device=device)
+                            device=device,
+                            penalty_weight=params['gp_weight'])
 
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)
@@ -145,33 +161,10 @@ def train_sdegan(params_file: str = None,
     params['total_epochs_trained'] += params['epochs']
     params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # reuse the params_file name if it was specified, otherwise use the default naming scheme
-    filename = params_file if params_file is not None else dirname + f'params_sde_{iso}_{varnames_abbrev}.json'
+    filename = params_file if params_file else dirname + f'params_sde_{iso}_{varnames_abbrev}.json'
     with open(filename, 'w') as f:
         json.dump(params, f)
 
 
-
 if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--params-file', type=str,
-                        help='path to a JSON file containing the training parameters for the model')
-    parser.add_argument('--warm-start', action='store_true', default=False,
-                        help='load saved models and continue training')
-    parser.add_argument('--epochs', type=int, default=100,
-                        help='number of epochs to train for')
-    parser.add_argument('--device', type=str,
-                        help='device to train on')
-    parser.add_argument('--no-save', action='store_true', default=False,
-                        help='do not save the trained model')
-    args = parser.parse_args()
-
-    # NOTE: Instead of specifying a model in the arguments for the warm start case, we rely on the naming
-    # convention for the saved models and construct the model name from the parameters specified in
-    # the parameters file.
-
-    train_sdegan(params_file=args.params_file,
-                 warm_start=args.warm_start,
-                 epochs=args.epochs,
-                 device=args.device,
-                 no_save=args.no_save)
+    fire.Fire(train_sdegan)

@@ -20,11 +20,13 @@ class FixedInitialCondition(InitialCondition):
 
 
 class RandomInitialCondition(InitialCondition):
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, low: float = 0.0, high: float = 1.0):
         self.dim = dim
+        self.low = low
+        self.high = high
 
     def sample(self, n: int) -> torch.Tensor:
-        return torch.randn(n, self.dim)
+        return torch.rand(n, self.dim) * (self.high - self.low) + self.low
 
 
 class SampledInitialCondition(InitialCondition):
@@ -39,6 +41,20 @@ class SampledInitialCondition(InitialCondition):
         idx = torch.randint(0, self.data.size(0), (n,))
         return self.data[idx]
 
+
+class ColumnwiseInitialCondition(InitialCondition):
+    def __init__(self, conditions: tuple[InitialCondition, list[int]]):
+        """
+        :param conditions: A tuple of (initial condition, column indices) pairs.
+        """
+        self.conditions = conditions
+        self.num_columns = max([max(cols) for _, cols in conditions]) + 1
+
+    def sample(self, n: int) -> torch.Tensor:
+        ic = torch.zeros(n, self.num_columns)
+        for cond, cols in self.conditions:
+            ic[:, cols] = cond.sample(n)
+        return ic
 
 class GeneratorFunc(torch.nn.Module):
     """
@@ -145,7 +161,7 @@ class GeneratorFunc(torch.nn.Module):
 
         if t.ndim > 1:
             t = t.squeeze()
-        
+
         for varname, forcing in self.mult_forcing.items():
             idx = self.varnames.index(varname)
             drift_mult, diffusion_mult = forcing(t, x[..., idx], **kwargs)
@@ -176,6 +192,138 @@ class GeneratorFunc(torch.nn.Module):
         f = torch.cat([f, torch.zeros(f.size(0), 2, device=f.device)], dim=1)
         g = torch.cat([g, torch.zeros(g.size(0), 2, device=g.device)], dim=1)
 
+        return f, g
+
+
+class GeneratorFuncCustom(torch.nn.Module):
+    sde_type = 'stratonovich'
+    noise_type = 'diagonal'
+
+    def __init__(self,
+                 state_size: int,
+                 mlp_size: int,
+                 num_layers: int,
+                 varnames: list[str] = None,
+                 add_forcing: dict[str, torch.nn.Module] = {},
+                 mult_forcing: dict[str, torch.nn.Module] = {}) -> None:
+        """
+        Constructor for the SDE
+
+        Parameters
+        ----------
+        state_size : int
+            The dimensionality of the state (number of variables).
+        mlp_size : int
+            The size of the hidden layers in the MLPs.
+        num_layers : int
+            The number of hidden layers in the MLPs.
+        varnames : list[str]
+            The names of the variables in the data, used to applying exogenous forcing functions to
+            the drift and diffusion functions of the SDE by variable.
+        add_forcing : dict
+            A dictionary of forcing functions (implemented as torch.nn.Modules) indexed by variable name.
+            These will be applied additively to the drift and diffusion functions of the SDE.
+        mult_forcing : dict
+            A dictionary of forcing functions (implemented as torch.nn.Modules) indexed by variable name.
+            These will be applied multiplicatively to the drift and diffusion functions of the SDE.
+        """
+        super().__init__()
+        # General drift and diffusion functions modeled with MLPs.
+        self.varnames = varnames
+        self.add_forcing = add_forcing
+        self.mult_forcing = mult_forcing
+
+        # Solar mean-reversion parameters
+        self._solar_theta = torch.nn.Parameter(torch.tensor(1.0))
+        self._solar_mu = torch.nn.Parameter(torch.tensor(0.5))
+        self._solar_sigma = torch.nn.Parameter(torch.tensor(1.0))
+
+        # Wind mean-reversion parameters
+        self._wind_theta = torch.nn.Parameter(torch.tensor(1.0))
+        self._wind_mu = torch.nn.Parameter(torch.tensor(0.5))
+        self._wind_sigma = torch.nn.Parameter(torch.tensor(1.0))
+
+        self._drift = MLP(
+            in_size=1 + state_size,  # +1 for time dimension
+            out_size=state_size,
+            mlp_size=mlp_size,
+            num_layers=num_layers,
+            activation='lipswish',
+            final_activation='identity'
+        )
+        self._diffusion = MLP(
+            in_size=1 + state_size,
+            out_size=state_size,
+            mlp_size=mlp_size,
+            num_layers=num_layers,
+            activation='lipswish',
+            final_activation='identity'
+        )
+
+    def _solar_fg(self, t, x):
+        x_solar = x[:, self.varnames.index("SOLAR")]
+        drift = torch.square(self._solar_theta) * (self._solar_mu - x_solar)
+        diffusion = torch.square(self._solar_sigma) * x_solar * (1 - x_solar)
+        return drift, diffusion
+
+    def _wind_fg(self, t, x):
+        x_wind = x[:, self.varnames.index("WIND")]
+        drift = torch.square(self._wind_theta) * (self._wind_mu - x_wind)
+        diffusion = torch.square(self._wind_sigma) * x_wind * (1 - x_wind)
+        return drift, diffusion
+
+    def _load_fg(self, t, x):
+        # We're going to leave this one to the FFNN entirely.
+        return 1., 1.
+
+    def f_and_g(self,
+                t: torch.Tensor,
+                x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Used by torchsde, not a pytorch convention. Returns drift and diffusion
+        values.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            The time.
+        x : torch.Tensor
+            The current state of the SDE.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The drift and diffusion terms of the SDE.
+        """
+        t = t.expand(x.size(0), 1)
+        tx = torch.cat([t, x], dim=1)
+
+        f = torch.zeros_like(x)
+        g = torch.zeros_like(x)
+
+        # Fill in the drift and diffusion terms one by one
+        load_idx = self.varnames.index("TOTALLOAD")
+        wind_idx = self.varnames.index("WIND")
+        solar_idx = self.varnames.index("SOLAR")
+
+        f[:, load_idx], g[:, load_idx] = self._load_fg(t, x)
+        f[:, wind_idx], g[:, wind_idx] = self._wind_fg(t, x)
+        f[:, solar_idx], g[:, solar_idx] = self._solar_fg(t, x)
+
+        # Add FFNN terms to f and g to allow for more complex dynamics that we don't model explicitly.
+        f *= self._drift(tx)
+        g *= self._diffusion(tx)
+
+        if torch.any(torch.abs(x) > 1e6):
+            # Find which row has the NaN
+            for i in range(f.size(0)):
+                if torch.isnan(f[i]).any() or torch.isnan(g[i]).any():
+                    print(f"t: {t[i].item():2.1f}")
+                    print(f"x: {[x[i, j].item() for j in range(x.size(1))]}")
+                    print(f"f: {[f[i, j].item() for j in range(f.size(1))]}")
+                    print(f"g: {[g[i, j].item() for j in range(g.size(1))]}")
+                    break
+            raise ValueError("NaN in f or g")
 
         return f, g
 
@@ -231,7 +379,8 @@ class Generator(torch.nn.Module):
         self._dawn_dusk_sampler = dawn_dusk_sampler
 
         # The SDE itself.
-        self._func = GeneratorFunc(state_size, mlp_size, num_layers, varnames, add_forcing, mult_forcing)
+        # self._func = GeneratorFunc(state_size, mlp_size, num_layers, varnames, add_forcing, mult_forcing)
+        self._func = GeneratorFuncCustom(state_size, mlp_size, num_layers, varnames)
 
         # default number of time steps to evaluate the SDE at
         # handy to not have to pass this in every time so we can use the same training infrastructure
@@ -263,13 +412,13 @@ class Generator(torch.nn.Module):
         if ts is None and self._time_steps is None:
             raise ValueError('Either pass in ts or set time_steps in the constructor!')
         elif ts is None:
-            ts = torch.arange(self._time_steps, device=initial_condition.device)
+            ts = torch.arange(self._time_steps, device=device)
 
         batch_size = initial_condition.size(0)
-        if self._dawn_dusk_sampler is not None:
-            t_dawn, t_dusk = self._dawn_dusk_sampler.sample(batch_size)
-            # Pack the dawn and dusk times into the initial condition
-            initial_condition = torch.cat([initial_condition, t_dawn.unsqueeze(1).to(device), t_dusk.unsqueeze(1).to(device)], dim=1)
+        # if self._dawn_dusk_sampler is not None:
+        #     t_dawn, t_dusk = self._dawn_dusk_sampler.sample(batch_size)
+        #     # Pack the dawn and dusk times into the initial condition
+        #     initial_condition = torch.cat([initial_condition, t_dawn.unsqueeze(1).to(device), t_dusk.unsqueeze(1).to(device)], dim=1)
 
         ###################
         # We use the reversible Heun method to get accurate gradients whilst using the adjoint method.
@@ -279,7 +428,29 @@ class Generator(torch.nn.Module):
         xs = xs.transpose(0, 1)
 
         # Drop the dawn and dusk times from the state
-        xs = xs[..., :-2]
+        # xs = xs[..., :-2]
+
+        # Make any solar value before dawn or after dusk zero
+        xs = torch.concat([xs, torch.zeros((batch_size, len(ts), 1), device=device)], dim=2)
+        dawn, dusk = self._dawn_dusk_sampler.sample(batch_size)
+        dawn = dawn.unsqueeze(1)
+        dusk = dusk.unsqueeze(1)
+        ts_tiled = ts.unsqueeze(0).expand(batch_size, ts.size(0))
+        solar_idx = self._func.varnames.index("SOLAR")
+        # Apply a quadratic transformation to the remaining data values
+        h = (dawn + dusk) / 2
+        k = 1.0
+        a = -4 * k / (dusk - dawn) ** 2
+        xs[..., solar_idx + 1] = xs[..., solar_idx] * (a * torch.square(ts_tiled - h) + k) * (ts_tiled >= dawn) * (ts_tiled <= dusk)
+        xs = xs[..., [0, 1, 3]]
+        if torch.any(xs[:, 22:, -1] > 1e-6):
+            for i in range(batch_size):
+                if torch.any(xs[i, 22:, -1] > 1e-6):
+                    print(f"t: {ts_tiled[i]}")
+                    print(f"x: {xs[i, :, solar_idx].detach().cpu().numpy()}")
+                    print(f"dawn: {dawn[i]}")
+                    print(f"dusk: {dusk[i]}")
+                    raise ValueError("Solar value after dusk")
 
         ###################
         # Normalise the data to the form that the discriminator expects, in particular including time as a channel.

@@ -57,13 +57,20 @@ class SolarMultForcing(torch.nn.Module):
         self.threshold = FastHardSigmoid(slope=1.0)
 
     def forward(self, t: torch.Tensor, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        t_dawn = kwargs['t_dawn'] - 1
-        t_dusk = kwargs['t_dusk'] - 1
+        t_dawn = kwargs['t_dawn']
+        t_dusk = kwargs['t_dusk']
 
         # During the day, the drift term is multiplied by a cosine function that is at its maximum
         # absolute values at dawn and dusk.
-        drift = torch.cos(torch.pi * (t - t_dawn) / (t_dusk - t_dawn)) \
-                * self.threshold(t - t_dawn) * self.threshold(t_dusk - t)
+        # drift = torch.cos(torch.pi * (t - t_dawn) / (t_dusk - t_dawn)) \
+        #         * self.threshold(t - t_dawn) * self.threshold(t_dusk - t)
+
+        s = (t - t_dawn) / (t_dusk - t_dawn)
+        eps = 1e-6
+        # Use the drift function to implement a Brownian bridge
+        is_day = (t >= t_dawn) * (t <= t_dusk)
+        drift = -x / (t - t_dawn + eps) * (1 - s) - x / (t_dusk - t + eps) * s
+        drift *= is_day
 
         diffusion = self.threshold(t - t_dawn) * self.threshold(t_dusk - t)
 
@@ -80,7 +87,8 @@ class SolarAddForcing(torch.nn.Module):
     def forward(self, t: torch.Tensor, x: torch.Tensor, **kwargs) -> torch.Tensor:
         t_dawn = kwargs['t_dawn']
         t_dusk = kwargs['t_dusk']
-        drift = self.nighttime_mean_reversion * x * (self.threshold(t_dawn - t) + self.threshold(t - t_dusk))
+        is_night = (t < t_dawn) + (t > t_dusk)
+        drift = self.nighttime_mean_reversion * x * is_night
         diffusion = torch.zeros_like(x)
         return drift, diffusion
 
