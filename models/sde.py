@@ -2,7 +2,7 @@ import torch
 import torchsde
 import torchcde
 
-from models.layers import MLP
+from models.layers import FFNN
 from models.preprocessing import Preprocessor
 
 
@@ -37,18 +37,18 @@ class GeneratorFunc(torch.nn.Module):
         self._hidden_size = hidden_size
 
         # General drift and diffusion functions modeled with MLPs.
-        self._drift = MLP(
+        self._drift = FFNN(
             in_size=1 + hidden_size,  # +1 for time dimension
             out_size=hidden_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
             final_activation='tanh'
         )
-        self._diffusion = MLP(
+        self._diffusion = FFNN(
             in_size=1 + hidden_size,
             out_size=hidden_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
             final_activation='tanh'
@@ -125,10 +125,10 @@ class Generator(torch.nn.Module):
         self._hidden_size = hidden_size
 
         # MLP to map initial noise to the initial state of the SDE.
-        self._initial = MLP(
+        self._initial = FFNN(
             in_size=initial_noise_size,
             out_size=hidden_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
             final_activation='sigmoid'
@@ -265,10 +265,10 @@ class DiscriminatorFunc(torch.nn.Module):
         self._hidden_size = hidden_size
 
         # tanh is important for model performance
-        self._module = MLP(
+        self._module = FFNN(
             in_size=1 + hidden_size,
             out_size=hidden_size * (1 + data_size),
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
             final_activation='tanh'
@@ -323,7 +323,7 @@ class Discriminator(torch.nn.Module):
         super().__init__()
 
         # MLP to map from data space to latent space of discriminator CDE.
-        self._initial = MLP(
+        self._initial = FFNN(
             1 + data_size,
             hidden_size,
             mlp_size,

@@ -6,8 +6,8 @@ import fire
 import torch
 from torch.optim import Adam
 
-from models.sde_no_embed import Generator, DiscriminatorSimple, SampledInitialCondition, ColumnwiseInitialCondition, RandomInitialCondition
-from models.forcing import SolarMultForcing, WindMultForcing, DawnDuskSampler, SolarAddForcing
+from models.sde_no_embed import SampledInitialCondition
+from models.sde_wind import Generator, DiscriminatorSimple
 from training import WGANGPTrainer
 from dataloaders import get_sde_dataloader
 from utils.plotting import SDETrainingPlotter
@@ -41,7 +41,7 @@ def train_sdegan(params_file: str = "",
         params = {
             'time_series_length':  24,  # number of nodes in generator output, discriminator input
             'ISO':            'ERCOT',
-            'variables':     ['TOTALLOAD', 'WIND', 'SOLAR'],
+            'variables':     ['WIND'],
             'time_features':  ['HOD'],
             'gen_mlp_size':       256,
             'gen_num_layers':       3,
@@ -74,41 +74,15 @@ def train_sdegan(params_file: str = "",
                                                  batch_size=params['batch_size'],
                                                  device=device)
 
-    solar = dataloader.dataset[..., params["variables"].index("SOLAR") + 1]
-    # Some of the data is bad! Solar values must be 0 at night.
-    bad_rows, _ = torch.where(solar[:, [0, 1, 2, 21, 22, 23]] > 1e-6)
-    bad_rows = bad_rows.unique()
-    all_rows = torch.arange(solar.size(0)).to(device)
-    good_rows = all_rows[~torch.isin(all_rows, bad_rows)]
-    # Drop the bad rows
-    solar = solar[good_rows]
-    # Remake the dataloader
-    dataset = dataloader.dataset[good_rows]
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=params['batch_size'], shuffle=True)
-
-    solar_forcing = SolarMultForcing()
-    solar_add_forcing = SolarAddForcing()
-    wind_forcing = WindMultForcing()
-    # mult_forcing = {"SOLAR": solar_forcing,
-    #                 "WIND": wind_forcing}
-    # add_forcing = {"SOLAR": solar_add_forcing}
-    initial_condition = SampledInitialCondition(data=dataloader.dataset[..., [1, 2]])
-    aux_solar_initial_condition = RandomInitialCondition(dim=1, low=0.2, high=0.8)
-    all_ic = ColumnwiseInitialCondition([
-        (initial_condition, [0, 1]),
-        (aux_solar_initial_condition, [2])
-    ], device=device)
+    initial_condition = SampledInitialCondition(data=dataloader.dataset)
     state_size = len(params['variables'])
 
-    G = Generator(initial_condition=all_ic,
+    G = Generator(initial_condition=initial_condition,
                   state_size=state_size,
                   mlp_size=params['gen_mlp_size'],
                   num_layers=params['gen_num_layers'],
                   time_steps=params['time_series_length'],
-                  varnames=params["variables"],
-                #   mult_forcing=mult_forcing,
-                #   add_forcing=add_forcing,
-                  dawn_dusk_sampler=DawnDuskSampler(solar)).to(device)
+                  varnames=params["variables"]).to(device)
     D = DiscriminatorSimple(data_size=state_size,
                             time_size=params['time_series_length'],
                             num_layers=5,

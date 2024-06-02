@@ -1,7 +1,7 @@
 import torch
 import torchsde
 
-from models.layers import MLP
+from models.layers import FFNN
 
 
 class InitialCondition:
@@ -41,20 +41,49 @@ class SampledInitialCondition(InitialCondition):
         idx = torch.randint(0, self.data.size(0), (n,))
         return self.data[idx]
 
+    def get_inds(self, idx):
+        return self.data[idx]
+
+    @property
+    def shape(self):
+        return self.data.shape
+
 
 class ColumnwiseInitialCondition(InitialCondition):
-    def __init__(self, conditions: tuple[InitialCondition, list[int]]):
+    def __init__(self, conditions: tuple[InitialCondition, list[int]], device):
         """
         :param conditions: A tuple of (initial condition, column indices) pairs.
         """
         self.conditions = conditions
         self.num_columns = max([max(cols) for _, cols in conditions]) + 1
+        self.device = device
 
     def sample(self, n: int) -> torch.Tensor:
-        ic = torch.zeros(n, self.num_columns)
+        ic = torch.zeros(n, self.num_columns).to(self.device)
         for cond, cols in self.conditions:
-            ic[:, cols] = cond.sample(n)
+            ic[:, cols] = cond.sample(n).to(self.device)
         return ic
+
+    def get_inds(self, idx):
+        ic = torch.zeros(idx.size(0), self.num_columns).to(self.device)
+        for cond, cols in self.conditions:
+            if hasattr(cond, "get_inds"):
+                ic[:, cols] = cond.get_inds(idx).to(self.device)
+            else:
+                ic[:, cols] = cond.sample(idx.size(0)).to(self.device)
+        return ic
+
+    @property
+    def shape(self):
+        cond_shape = None
+        for cond in self.conditions:
+            if hasattr(cond, "shape"):
+                if cond_shape is None:
+                   cond_shape = cond.shape
+                else:
+                    assert cond_shape[:-1] == cond.shape[:-1]
+        return cond_shape
+
 
 class GeneratorFunc(torch.nn.Module):
     """
@@ -97,18 +126,18 @@ class GeneratorFunc(torch.nn.Module):
         self.add_forcing = add_forcing
         self.mult_forcing = mult_forcing
 
-        self._drift = MLP(
+        self._drift = FFNN(
             in_size=1 + state_size,  # +1 for time dimension
             out_size=state_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
             final_activation='identity'
         )
-        self._diffusion = MLP(
+        self._diffusion = FFNN(
             in_size=1 + state_size,
             out_size=state_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
             final_activation='identity'
@@ -133,13 +162,6 @@ class GeneratorFunc(torch.nn.Module):
         tuple[torch.Tensor, torch.Tensor]
             The drift and diffusion terms of the SDE.
         """
-        if torch.abs(x).max() > 1e6:
-            # print(f"Large value in x!")
-            # print(f"t: {t}")
-            # print(f"x: {x}")
-            # raise ValueError
-            return torch.zeros_like(x), torch.zeros_like(x)
-
         # Last two dimensions of x are the dawn and dusk times
         t_dawn = x[..., -2]
         t_dusk = x[..., -1]
@@ -173,19 +195,6 @@ class GeneratorFunc(torch.nn.Module):
             drift_add, diffusion_add = forcing(t, x[..., idx], **kwargs)
             f[:, idx] += drift_add
             g[:, idx] += diffusion_add
-
-        if torch.isnan(f).any() or torch.isnan(g).any():
-            # Find which row has the NaN
-            for i in range(f.size(0)):
-                if torch.isnan(f[i]).any() or torch.isnan(g[i]).any():
-                    print(f"t: {t[i]:2.1f}")
-                    print(f"x: {[x[i, j].item() for j in range(x.size(1))]}")
-                    print(f"f: {[f[i, j].item() for j in range(f.size(1))]}")
-                    print(f"g: {[g[i, j].item() for j in range(g.size(1))]}")
-                    print(f"f_original: {[f_original[i, j].item() for j in range(f_original.size(1))]}")
-                    print(f"g_original: {[g_original[i, j].item() for j in range(g_original.size(1))]}")
-                    break
-            raise ValueError("NaN in f or g")
 
         # Append the dawn and dusk times back to the state. This can be done by concatenating a 0
         # to the end of f and g, causing the dawn and dusk times to be passed through the SDE unchanged.
@@ -243,21 +252,21 @@ class GeneratorFuncCustom(torch.nn.Module):
         self._wind_mu = torch.nn.Parameter(torch.tensor(0.5))
         self._wind_sigma = torch.nn.Parameter(torch.tensor(1.0))
 
-        self._drift = MLP(
+        self._drift = FFNN(
             in_size=1 + state_size,  # +1 for time dimension
             out_size=state_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
-            final_activation='identity'
+            final_activation='tanh'
         )
-        self._diffusion = MLP(
+        self._diffusion = FFNN(
             in_size=1 + state_size,
             out_size=state_size,
-            mlp_size=mlp_size,
+            num_units=mlp_size,
             num_layers=num_layers,
             activation='lipswish',
-            final_activation='identity'
+            final_activation='tanh'
         )
 
     def _solar_fg(self, t, x):
@@ -314,16 +323,16 @@ class GeneratorFuncCustom(torch.nn.Module):
         f *= self._drift(tx)
         g *= self._diffusion(tx)
 
-        if torch.any(torch.abs(x) > 1e6):
+        if torch.any(f.abs() > 1e6) or torch.any(g.abs() > 1e6):
             # Find which row has the NaN
             for i in range(f.size(0)):
-                if torch.isnan(f[i]).any() or torch.isnan(g[i]).any():
+                if torch.any(f[i].abs() > 1e6) or torch.any(g[i].abs() > 1e6):
                     print(f"t: {t[i].item():2.1f}")
                     print(f"x: {[x[i, j].item() for j in range(x.size(1))]}")
                     print(f"f: {[f[i, j].item() for j in range(f.size(1))]}")
                     print(f"g: {[g[i, j].item() for j in range(g.size(1))]}")
-                    break
-            raise ValueError("NaN in f or g")
+                    raise ValueError("NaN in f or g")
+            print("Couldn't find the NaN???")
 
         return f, g
 
@@ -424,7 +433,7 @@ class Generator(torch.nn.Module):
         # We use the reversible Heun method to get accurate gradients whilst using the adjoint method.
         ###################
         xs = torchsde.sdeint_adjoint(self._func, initial_condition, ts, method='reversible_heun',
-                                     dt=0.1, adjoint_method='adjoint_reversible_heun')
+                                     dt=0.01, adjoint_method='adjoint_reversible_heun')
         xs = xs.transpose(0, 1)
 
         # Drop the dawn and dusk times from the state
@@ -433,8 +442,8 @@ class Generator(torch.nn.Module):
         # Make any solar value before dawn or after dusk zero
         xs = torch.concat([xs, torch.zeros((batch_size, len(ts), 1), device=device)], dim=2)
         dawn, dusk = self._dawn_dusk_sampler.sample(batch_size)
-        dawn = dawn.unsqueeze(1)
-        dusk = dusk.unsqueeze(1)
+        dawn = dawn.unsqueeze(1).to(device)
+        dusk = dusk.unsqueeze(1).to(device)
         ts_tiled = ts.unsqueeze(0).expand(batch_size, ts.size(0))
         solar_idx = self._func.varnames.index("SOLAR")
         # Apply a quadratic transformation to the remaining data values
@@ -443,14 +452,6 @@ class Generator(torch.nn.Module):
         a = -4 * k / (dusk - dawn) ** 2
         xs[..., solar_idx + 1] = xs[..., solar_idx] * (a * torch.square(ts_tiled - h) + k) * (ts_tiled >= dawn) * (ts_tiled <= dusk)
         xs = xs[..., [0, 1, 3]]
-        if torch.any(xs[:, 22:, -1] > 1e-6):
-            for i in range(batch_size):
-                if torch.any(xs[i, 22:, -1] > 1e-6):
-                    print(f"t: {ts_tiled[i]}")
-                    print(f"x: {xs[i, :, solar_idx].detach().cpu().numpy()}")
-                    print(f"dawn: {dawn[i]}")
-                    print(f"dusk: {dusk[i]}")
-                    raise ValueError("Solar value after dusk")
 
         ###################
         # Normalise the data to the form that the discriminator expects, in particular including time as a channel.

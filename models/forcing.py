@@ -19,27 +19,31 @@ This will ensure that the wind function is always positive
 """
 
 import torch
-from models.layers import MLP
+from models.layers import FFNN
 
 
 class DawnDuskSampler:
     def __init__(self, data: torch.Tensor):
-        self.data = data  # shape (*, segment_size) of solar data
         self.segment_length = data.size(1)
+
+        # Parse dawn/dusk times from the solar data
+        # Find the dawn and dusk times of the samples
+        self.dawn = torch.zeros(data.size(0))
+        self.dusk = torch.zeros(data.size(0))
+        for i, sample in enumerate(data):
+            # Find the first time the solar data is non-zero
+            is_daytime = (sample > 1e-3).float()
+            self.dawn[i] = torch.argmax(is_daytime)
+            # Find the last time the solar data is non-zero
+            self.dusk[i] = self.segment_length - torch.argmax(is_daytime.flip(0))
 
     def sample(self, n: int) -> torch.Tensor:
         idx = torch.randint(0, self.data.size(0), (n,))
-        samples = self.data[idx]
-        # Find the dawn and dusk times of the samples
-        dawn = torch.zeros(n)
-        dusk = torch.zeros(n)
-        for i in range(n):
-            # Find the first time the solar data is non-zero
-            is_daytime = (samples[i] > 1e-3).float()
-            dawn[i] = torch.argmax(is_daytime)
-            # Find the last time the solar data is non-zero
-            dusk[i] = self.segment_length - torch.argmax(is_daytime.flip(0))
-        return dawn, dusk
+        return self.dawn[idx], self.dusk[idx]
+
+    def get_inds(self, idx):
+        idx = idx.to(self.dawn.device)
+        return self.dawn[idx], self.dusk[idx]
 
 
 class FastHardSigmoid(torch.nn.Module):
@@ -100,7 +104,7 @@ class WindMultForcing(torch.nn.Module):
                        num_layers: int =  2,
                        **kwargs):
         super().__init__()
-        self.model = MLP(in_size, out_size, mlp_size, num_layers, **kwargs)
+        self.model = FFNN(in_size, out_size, mlp_size, num_layers, **kwargs)
 
     def forward(self, t: torch.Tensor, x: torch.Tensor, **kwargs):
         # drift_term = x - self.model(torch.vstack([t, x]).T).squeeze()

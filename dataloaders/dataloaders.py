@@ -9,6 +9,20 @@ from dataloaders.preprocessing import StandardScaler, FunctionTransformer, Inver
 from dataloaders.data.meta import meta
 
 
+class Passthrough:
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X
+
+    def fit_transform(self, X, y=None):
+        return X
+
+    def inverse_transform(self, X):
+        return X
+
+
 class TimeSeriesDataset(torch.utils.data.Dataset):
     def __init__(self,
                  data: pd.DataFrame,
@@ -86,7 +100,6 @@ def get_dataloader(iso: str,
 def get_sde_dataloader(iso: str,
                        varname: Union[list[str], str],
                        segment_size: int = 24,
-                       time_features: Union[list[str], str] = ["HOD"],
                        batch_size: int = 32,
                        device: str = "cpu") -> DataLoader:
     """
@@ -111,29 +124,22 @@ def get_sde_dataloader(iso: str,
     dataloader : DataLoader
         A pytorch DataLoader object.
     """
-    if time_features != ["HOD"]:
-        raise ValueError("Only HOD is supported for time_features.")
-
     data = pd.read_csv(f"dataloaders/data/{iso.lower()}.csv")[varname]
-    # Set solar values close to zero to zero
-    data["SOLAR"] = data["SOLAR"].apply(lambda x: 0 if x < 1e-2 else x)
     data = data.to_numpy()
-    hour_of_day = np.arange(len(data)) % 24
-    data = np.hstack([hour_of_day.reshape(-1, 1), data])
-    data = torch.Tensor(data.reshape(-1, segment_size, len(varname) + 1))
+    data = torch.Tensor(data.reshape(-1, segment_size, len(varname)))
 
     load_transformer = StandardScaler()
-    wind_transformer  = FunctionTransformer(func=None, inverse_func=lambda x: torch.clip(x, 0, 1))
-    solar_transformer = FunctionTransformer(func=None, inverse_func=lambda x: torch.clip(x, 0, 1))
-    transformer = InvertibleColumnTransformer(
-        transformers={
-            "TOTALLOAD": load_transformer,
-            # "WIND": wind_transformer,
-            # "SOLAR": solar_transformer
-        },
-        columns=time_features + varname
-    )
-    Xt = transformer.fit_transform(data)
+    if "TOTALLOAD" in varname:
+        transformer = InvertibleColumnTransformer(
+            transformers={
+                "TOTALLOAD": load_transformer,
+            },
+            columns=varname
+        )
+        Xt = transformer.fit_transform(data)
+    else:
+        Xt = data
+        transformer = Passthrough()
 
     dataloader = torch.utils.data.DataLoader(Xt.to(device), batch_size=batch_size, shuffle=True)
 

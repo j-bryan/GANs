@@ -14,7 +14,7 @@ class LipSwish(torch.nn.Module):
         return 0.909 * torch.nn.functional.silu(x)
 
 
-class MLP(torch.nn.Module):
+class FFNN(torch.nn.Module):
     """
         A simple multi-layer perceptron with intermediate activations and a final optional
         activation at the output layer.
@@ -22,7 +22,7 @@ class MLP(torch.nn.Module):
     def __init__(self,
                  in_size: int,
                  out_size: int,
-                 mlp_size: int,
+                 num_units: int,
                  num_layers: int,
                  activation: str = 'lipswish',
                  activation_kwargs: dict = None,
@@ -37,7 +37,7 @@ class MLP(torch.nn.Module):
             The size of the input.
         out_size : int
             The size of the output.
-        mlp_size : int
+        num_units : int
             The size of the hidden layers.
         num_layers : int
             The number of hidden layers.
@@ -57,12 +57,12 @@ class MLP(torch.nn.Module):
         if final_activation_kwargs is None:
             final_activation_kwargs = {}
 
-        model = [torch.nn.Linear(in_size, mlp_size),
+        model = [torch.nn.Linear(in_size, num_units),
                  activations.get(activation.lower())(**activation_kwargs)]
         for _ in range(num_layers - 1):
-            model.append(torch.nn.Linear(mlp_size, mlp_size))
+            model.append(torch.nn.Linear(num_units, num_units))
             model.append(activations.get(activation.lower())(**activation_kwargs))
-        model.append(torch.nn.Linear(mlp_size, out_size))
+        model.append(torch.nn.Linear(num_units, out_size))
         model.append(activations.get(final_activation.lower())(**final_activation_kwargs))
         self._model = torch.nn.Sequential(*model)
 

@@ -4,6 +4,7 @@ from PIL import Image
 import imageio
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 matplotlib.use('Agg')
 
@@ -105,9 +106,11 @@ class SDETrainingPlotter(TrainingPlotter):
                                      figsize=meta.get('figsize', (12, 5)))
 
         ax[self._samples_names[0]].set_title(f'Samples: Epoch {meta.get("epoch", len(self.frames) + 1)}')
+        t = np.arange(samples.shape[1])
         for i, varname in enumerate(self._samples_names):
             for sample in samples:
-                ax[varname].plot(sample[:, 0], sample[:, i + 1])  # first row is time
+                # ax[varname].plot(sample[:, 0], sample[:, i + 1])  # first row is time
+                ax[varname].plot(t, sample[:, i])  # first row is time
             ax[varname].set_ylabel(varname)
 
         for j, lossname in enumerate(self._loss_names):
