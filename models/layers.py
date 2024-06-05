@@ -1,4 +1,21 @@
 import torch
+from dataclasses import dataclass
+
+
+@dataclass
+class FFNNConfig:
+    in_size: int
+    num_units: int
+    num_layers: int
+    out_size: int
+    activation: str = "lipswish"
+    final_activation: str = "identity"
+
+    def to_dict(self, prefix: str = ""):
+        # prepend the prefix to the keys
+        if prefix == "":
+            return self.__dict__
+        return {prefix + "_" + k: v for k, v in self.__dict__.items()}
 
 
 class LipSwish(torch.nn.Module):
