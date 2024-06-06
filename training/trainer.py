@@ -18,7 +18,8 @@ class Trainer:
                  d_optimizer: torch.optim.Optimizer,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
-                 device: str | None = None) -> None:
+                 device: str | None = None,
+                 silent: bool = False) -> None:
         """
         Constructor.
 
@@ -54,6 +55,8 @@ class Trainer:
         self.print_every = 0  # by default, don't print or plot anything
         self.plot_every = 0
         self.plotter = plotter
+
+        self.silent = silent
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:
         """
@@ -109,13 +112,6 @@ class Trainer:
         g_loss.backward()
         self.G_opt.step()
 
-        # Print model parameters to check if updates for initial value embedding is actually happening
-        # for name, param in self.G._readout.named_parameters():
-        #     if not param.requires_grad:
-        #         continue
-        #     print(name, param.grad.view(-1))
-        #     # print(name, param.data)
-
         # Record loss
         self.losses['G'].append(g_loss.data.item())
 
@@ -133,9 +129,6 @@ class Trainer:
             self._critic_train_iteration(data)
             if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
                 self._generator_train_iteration(data.size()[0])
-            # for i in range(self.critic_iterations):
-            #     self._critic_train_iteration(data)
-            # self._generator_train_iteration(data.size()[0])
 
     def train(self,
               data_loader: torch.utils.data.DataLoader,
@@ -175,14 +168,15 @@ class Trainer:
 
             # Print header using the keys of the losses dictionary
             header_template = '{:<10}' * (len(self.losses.keys()) + 1)
-            tqdm.write(header_template.format('Epoch', *list(self.losses.keys())))
+            if not self.silent:
+                tqdm.write(header_template.format('Epoch', *list(self.losses.keys())))
 
             # template for printing losses during the training process
             print_template = '{:<10}' + '{:<10.4f}' * len(self.losses.keys())
 
-        for epoch in trange(epochs):  # tqdm gives us a nice progress bar
+        for epoch in trange(epochs, disable=self.silent):  # tqdm gives us a nice progress bar
             self._train_epoch(data_loader)
-            if self.print_every > 0 and (epoch + 1) % self.print_every == 0:
+            if self.print_every > 0 and (epoch + 1) % self.print_every == 0 and not self.silent:
                 tqdm.write(print_template.format(epoch + 1, *[loss[-1] for loss in self.losses.values()]))
 
             # Save progress

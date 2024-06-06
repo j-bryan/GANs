@@ -37,7 +37,9 @@ def train_sdegan(params_file: str = None,
                  warm_start: bool = False,
                  epochs: int = 100,
                  device: str | None = None,
-                 no_save: bool = False) -> None:
+                 no_save: bool = False,
+                 silent: bool = False,
+                 hidden_size: int = 16) -> None:
     """
     Sets up and trains an SDE-GAN.
 
@@ -59,10 +61,10 @@ def train_sdegan(params_file: str = None,
     else:
         params = {
             "ISO": "ERCOT",
-            # "variables": ["TOTALLOAD", "WIND", "SOLAR"],
-            "variables": ["TOTALLOAD", "WIND"],
+            "variables": ["TOTALLOAD", "WIND", "SOLAR"],
             "time_features": ["HOD"],
             "time_series_length": 24,
+            "critic_iterations": 5,
             "penalty_weight": 10.0,
             "epochs": epochs,
             "total_epochs_trained": 0,
@@ -72,7 +74,7 @@ def train_sdegan(params_file: str = None,
         data_size = len(params["variables"])
         time_size = len(params["time_features"])
         initial_noise_size = 16
-        hidden_size = 16
+        # hidden_size = 16
 
         gen_noise_embed_config = FFNNConfig(
             in_size=initial_noise_size,
@@ -99,6 +101,7 @@ def train_sdegan(params_file: str = None,
             num_layers=3,
             num_units=64,
             out_size=len(params["variables"]),
+            final_activation=["identity", "sigmoid", "hardsigmoid"]
         )
         sde_generator_config = SdeGeneratorConfig(
             noise_type="diagonal",
@@ -120,7 +123,12 @@ def train_sdegan(params_file: str = None,
             num_units=256,
             out_size=1
         )
-        opt_config = AdamConfig(
+        gen_opt_config = AdamConfig(
+            lr=1e-4,
+            betas=(0.5, 0.9),
+            weight_decay=0.0
+        )
+        dis_opt_config = AdamConfig(
             lr=1e-4,
             betas=(0.5, 0.9),
             weight_decay=0.0
@@ -128,8 +136,8 @@ def train_sdegan(params_file: str = None,
 
         params.update(sde_generator_config.to_dict())
         params.update(discriminator_config.to_dict(prefix="dis"))
-        params.update(opt_config.to_dict(prefix="gen"))
-        params.update(opt_config.to_dict(prefix="dis"))
+        params.update(gen_opt_config.to_dict(prefix="gen"))
+        params.update(dis_opt_config.to_dict(prefix="dis"))
 
     # Find the most appropriate device for training
     device = device or get_accelerator_device()
@@ -162,8 +170,10 @@ def train_sdegan(params_file: str = None,
 
     plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'], transformer=transformer)
     trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
+                            critic_iterations=params['critic_iterations'],
                             plotter=plotter,
-                            device=device)
+                            device=device,
+                            silent=silent)
 
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)
@@ -179,22 +189,23 @@ def train_sdegan(params_file: str = None,
 
     # Save training visualizations
     iso = params['ISO']
+    postfix = f"hiddensize{hidden_size}_readoutHour"
     varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
-    trainer.save_training_gif(dirname + f'training_sde_{iso}_{varnames_abbrev}_nonlinear_readout.gif')
+    trainer.save_training_gif(dirname + f'training_sde_{iso}_{varnames_abbrev}_{postfix}.gif')
     # Saving individual frames from the GIF. We need to be careful to not save a ton of frames.
     save_every = len(plotter.frames) // 20 + 1  # will save at most 20 frames
-    plotter.save_frames(dirname + f'training_progress/training_sde_{iso}_{varnames_abbrev}_nonlinear_readout.png',
+    plotter.save_frames(dirname + f'training_progress/training_sde_{iso}_{varnames_abbrev}_{postfix}.png',
                         save_every=save_every)
 
     # Save models
-    torch.save(G.state_dict(), dirname + f'sde_gen_{iso}_{varnames_abbrev}_nonlinear_readout.pt')
-    torch.save(D.state_dict(), dirname + f'sde_dis_{iso}_{varnames_abbrev}_nonlinear_readout.pt')
+    torch.save(G.state_dict(), dirname + f'sde_gen_{iso}_{varnames_abbrev}_{postfix}.pt')
+    torch.save(D.state_dict(), dirname + f'sde_dis_{iso}_{varnames_abbrev}_{postfix}.pt')
 
     # Save parameters
     params['total_epochs_trained'] += params['epochs']
     params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # reuse the params_file name if it was specified, otherwise use the default naming scheme
-    filename = params_file if params_file is not None else dirname + f'params_sde_{iso}_{varnames_abbrev}_nonlinear_readout.json'
+    filename = params_file if params_file is not None else dirname + f'params_sde_{iso}_{varnames_abbrev}_{postfix}.json'
     with open(filename, 'w') as f:
         json.dump(params, f)
 

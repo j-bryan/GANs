@@ -31,6 +31,18 @@ class LipSwish(torch.nn.Module):
         return 0.909 * torch.nn.functional.silu(x)
 
 
+class FeaturewiseActivation(torch.nn.Module):
+    """
+        A module that applies a different activation function to each feature in the input tensor.
+    """
+    def __init__(self, activations: torch.nn.ModuleList):
+        super().__init__()
+        self.activations = torch.nn.ModuleList(activations)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return  torch.stack([act(x[..., i]) for i, act in enumerate(self.activations)], dim=-1)
+
+
 class FFNN(torch.nn.Module):
     """
         A simple multi-layer perceptron with intermediate activations and a final optional
@@ -43,7 +55,7 @@ class FFNN(torch.nn.Module):
                  num_layers: int,
                  activation: str = 'lipswish',
                  activation_kwargs: dict = None,
-                 final_activation: str = 'identity',
+                 final_activation: str | list[str] = 'identity',
                  final_activation_kwargs: dict = None) -> None:
         """
         Class constructor.
@@ -80,7 +92,11 @@ class FFNN(torch.nn.Module):
             model.append(torch.nn.Linear(num_units, num_units))
             model.append(activations.get(activation.lower())(**activation_kwargs))
         model.append(torch.nn.Linear(num_units, out_size))
-        model.append(activations.get(final_activation.lower())(**final_activation_kwargs))
+        if isinstance(final_activation, str):
+            model.append(activations.get(final_activation.lower())(**final_activation_kwargs))
+        else:  # final_activation is a list of activations
+            final_activations = torch.nn.ModuleList([activations.get(act.lower())(**final_activation_kwargs) for act in final_activation])
+            model.append(FeaturewiseActivation(final_activations))
         self._model = torch.nn.Sequential(*model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -130,6 +146,8 @@ activations = {
         'leakyrelu': torch.nn.LeakyReLU,
         'lipswish': LipSwish,
         'tanh': torch.nn.Tanh,
+        'hardtanh': torch.nn.Hardtanh,
         'sigmoid': torch.nn.Sigmoid,
+        'hardsigmoid': torch.nn.Hardsigmoid,
         'identity': torch.nn.Identity
     }

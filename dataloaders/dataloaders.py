@@ -125,6 +125,12 @@ def get_sde_dataloader(iso: str,
         A pytorch DataLoader object.
     """
     data = pd.read_csv(f"dataloaders/data/{iso.lower()}.csv")[varname]
+    if "SOLAR" in varname:
+        # Some solar data has non-zero values at night
+        solar = data["SOLAR"].values.reshape(-1, 24)
+        night_hours = np.where(solar.mean(axis=0) < 1e-3)[0]
+        solar[:, night_hours] = 0
+        data["SOLAR"] = solar.ravel()
     data = data.to_numpy()
     data = torch.Tensor(data.reshape(-1, segment_size, len(varname)))
 

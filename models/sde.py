@@ -128,6 +128,7 @@ class Generator(torch.nn.Module):
         # MLP to map the state of the SDE to the space of the data.
         # self._readout = torch.nn.Linear(hidden_size, data_size)
         self._readout = FFNN(**config.readout_config.to_dict())
+        # self._readout = torch.nn.Linear(config.readout_config.in_size, config.readout_config.out_size)
         # TODO: add time features to readout layer?
 
         # default number of time steps to evaluate the SDE at
@@ -175,6 +176,10 @@ class Generator(torch.nn.Module):
         xs = xs.transpose(0, 1)
         # concatenate time to last dimension of xs
         ts = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
+        # Let's try adding a nighttime hours feature. We'll define nighttime hours as 8pm to 6am.
+        # nighttime = ((ts.squeeze() % 24) > 20) | ((ts.squeeze() % 24) < 6)
+        # nighttime = nighttime.unsqueeze(-1).float()
+        # xs = torch.cat([ts, nighttime, xs], dim=2)
         xs = torch.cat([ts, xs], dim=2)
         # Apply readout to batches of hidden states one time step at a time
         ys = self._readout(xs)
@@ -202,7 +207,7 @@ class Generator(torch.nn.Module):
         return torch.randn(num_samples, self._initial_noise_size)
 
     def sample(self, num_samples: int = 1) -> torch.Tensor:
-        latent = self.sample_latent(num_samples).to(self._initial.parameters().__next__().data.device)
+        latent = self.sample_latent(num_samples).to(self._readout.parameters().__next__().data.device)
         return self(latent)
 
 

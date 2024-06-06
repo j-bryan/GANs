@@ -15,7 +15,8 @@ class WGANGPTrainer(Trainer):
                  penalty_weight: float = 10,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
-                 device: str | None = None) -> None:
+                 device: str | None = None,
+                 silent: bool = False) -> None:
         """
         Constructor.
 
@@ -42,6 +43,7 @@ class WGANGPTrainer(Trainer):
         super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter, device)
         self.penalty_weight = penalty_weight
         self.losses |= {'GP': [], 'gradient_norm': []}  # add gradient penalty terms to losses dict
+        self.silent = silent
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:
         """
