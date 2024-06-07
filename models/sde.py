@@ -115,6 +115,9 @@ class Generator(torch.nn.Module):
         super().__init__()
         self._initial_noise_size = config.init_noise_size
         self._hidden_size = config.hidden_size
+        # default number of time steps to evaluate the SDE at
+        # handy to not have to pass this in every time so we can use the same training infrastructure
+        self._time_steps = config.time_steps
 
         # MLP to map initial noise to the initial state of the SDE.
         self._initial = FFNN(**config.embed_config.to_dict())
@@ -129,15 +132,11 @@ class Generator(torch.nn.Module):
         # self._readout = torch.nn.Linear(hidden_size, data_size)
         self._readout = FFNN(**config.readout_config.to_dict())
         # self._readout = torch.nn.Linear(config.readout_config.in_size, config.readout_config.out_size)
-        # TODO: add time features to readout layer?
-
-        # default number of time steps to evaluate the SDE at
-        # handy to not have to pass this in every time so we can use the same training infrastructure
-        self._time_steps = config.time_steps
 
     def forward(self,
                 init_noise: torch.Tensor,
-                ts: torch.Tensor = None) -> torch.Tensor:
+                ts: torch.Tensor = None,
+                gradients: bool = False) -> torch.Tensor:
         """
         Forward pass of the SDE.
 
@@ -175,18 +174,40 @@ class Generator(torch.nn.Module):
         # Transpose to get (batch_size, time, hidden_size)
         xs = xs.transpose(0, 1)
         # concatenate time to last dimension of xs
-        ts = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
         # Let's try adding a nighttime hours feature. We'll define nighttime hours as 8pm to 6am.
         # nighttime = ((ts.squeeze() % 24) > 20) | ((ts.squeeze() % 24) < 6)
         # nighttime = nighttime.unsqueeze(-1).float()
         # xs = torch.cat([ts, nighttime, xs], dim=2)
-        xs = torch.cat([ts, xs], dim=2)
+        t_state = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
+        tx = torch.cat([t_state, xs], dim=2)
         # Apply readout to batches of hidden states one time step at a time
-        ys = self._readout(xs)
-        # Add the time dimension to the output again
-        # ty_generated = torch.cat([ts, ys], dim=2)
+        ys = self._readout(tx)
 
-        # return ty_generated
+        #########################################
+        if gradients:
+            # Use the generated samples to calculate gradients in the observed space of Y_t
+            f = torch.zeros(batch_size, self._time_steps, self._hidden_size)
+            g = torch.zeros(batch_size, self._time_steps, self._hidden_size)
+            for i in range(self._time_steps):
+                f[:, i], g[:, i] = self._func.f_and_g(ts[i], xs[:, i])
+            readout_jacobian = torch.zeros((batch_size, self._time_steps, ys.size(-1), self._hidden_size + 1))
+            # We need to calculate the jacobian of the readout layer with respect to the hidden state
+            # of the SDE for each time step and each batch.
+            for i in range(batch_size):
+                for j in range(self._time_steps):
+                    readout_jacobian[i, j] = torch.autograd.functional.jacobian(self._readout, tx[i, j, :]).squeeze()
+            # Since we're treating time like a state variable here, we need to add a 1 to the beginning
+            # of the f tensor and a 0 to the beginning of the g tensor.
+            f = torch.cat([torch.ones(batch_size, self._time_steps, 1), f], dim=2).unsqueeze(-1)
+            g = torch.cat([torch.zeros(batch_size, self._time_steps, 1), g], dim=2).unsqueeze(-1)
+            # With readout_jacobian of shape (batch_size, time_steps, data_size, hidden_size + 1)
+            drift = torch.matmul(readout_jacobian, f).squeeze(-1)
+            diffusion = torch.matmul(readout_jacobian, g).squeeze(-1)
+        #########################################
+
+        if gradients:
+            return ys, drift, diffusion
+
         return ys
 
     def sample_latent(self,
@@ -206,9 +227,9 @@ class Generator(torch.nn.Module):
         """
         return torch.randn(num_samples, self._initial_noise_size)
 
-    def sample(self, num_samples: int = 1) -> torch.Tensor:
+    def sample(self, num_samples: int = 1, gradients: bool = False) -> torch.Tensor:
         latent = self.sample_latent(num_samples).to(self._readout.parameters().__next__().data.device)
-        return self(latent)
+        return self(latent, gradients=gradients)
 
 
 ###################

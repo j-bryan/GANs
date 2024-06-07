@@ -19,6 +19,8 @@ from utils import get_accelerator_device
 from dataclasses import dataclass
 from models.layers import FFNNConfig
 
+from evaluate_sde import plot_gradients
+
 
 @dataclass
 class AdamConfig:
@@ -178,6 +180,8 @@ def train_sdegan(params_file: str = None,
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)
     trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=plot_every, print_every=print_every)
+
+    plot_gradients(G, params["variables"], transformer)
 
     if no_save:
         return

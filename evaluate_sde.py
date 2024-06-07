@@ -1,15 +1,21 @@
+import os
 import json
 import fire
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
+import matplotlib
+from matplotlib.patches import Wedge
+matplotlib.use("TkAgg")
+
+from scipy.stats import norm
 
 import torch
 
 from models.forcing import DawnDuskSampler
 from models.sde_no_embed import SampledInitialCondition
-from models.sde_statespace import Generator, DiscriminatorSimple
+# from models.sde_statespace import Generator, DiscriminatorSimple
+from models.sde import Generator, DiscriminatorSimple
 from dataloaders import get_sde_dataloader
 
 from statsmodels.tsa.stattools import acf, ccf
@@ -87,6 +93,63 @@ def plot_xcf(data, columns):
             plt.title(f"{var} vs {var2}")
             plt.legend()
             plt.savefig(f"plots/sde/ccf_{var}_{var2}.png", dpi=300)
+
+
+def stack_wedges(ax, base_x: float, base_y: float, u: float, v: float, std: float, n: int = 1, scale: float = 0.25):
+    """
+    Mimic a gradient by stacking n wedges with low opacity on top of each other. The width of
+    the wedges follows a normal distribution.
+    """
+    assert n > 0
+    if n == 1:  # 95% confidence interval
+        z_scores = [norm.ppf(0.975)]
+    elif n == 2:  # 50% and 95% confidence intervals
+        z_scores = [norm.ppf(0.75), norm.ppf(0.975)]
+    else:  # n confidence intervals between 50% and 95%
+        z_scores = norm.ppf(np.linspace(0.5, 0.975, n + 1))[1:]  # Skip the first one, which will have width 0
+
+    std = min(np.abs(std), 1e-6)
+
+    for z in z_scores:
+        theta1 = np.rad2deg(np.arctan2(v - z * std, u))
+        theta2 = np.rad2deg(np.arctan2(v + z * std, u))
+        # theta1, theta2 = sorted([theta1, theta2])
+        ax.add_patch(Wedge((base_x, base_y), scale, theta1, theta2, color="red", alpha=1/(n+1)))
+
+
+def plot_gradients(model: Generator, varnames: list[str], transformer):
+    # Sample the model
+    samples, drift, diffusion = model.sample(128, gradients=True)
+    samples = samples.detach().cpu().numpy()
+    drift = drift.detach().cpu().numpy()
+    diffusion = diffusion.detach().cpu().numpy()
+
+    # We know our only scaling is StandardScaler for TOTALLOAD. We'll rescale things manually so we
+    # don't mess up our gradients.
+    mean = transformer.transformers["TOTALLOAD"].mean.item()
+    std  = transformer.transformers["TOTALLOAD"].std.item()
+    load_idx = varnames.index("TOTALLOAD")
+    samples[:, :, load_idx] = samples[:, :, load_idx] * std + mean
+    drift[:, :, load_idx] *= std
+    diffusion[:, :, load_idx] *= std
+
+    # Plot a few samples along with arrows indicating the drift direction and a colored background
+    # indicating the diffusion.
+    fig, ax = plt.subplots(nrows=len(varnames), ncols=1, figsize=(15, 10))
+    ts = np.arange(24)
+    scale = 0.5
+    for isample in range(5):
+        for ivar, varname in enumerate(varnames):
+            ax[ivar].plot(ts, samples[isample, :, ivar], color="blue")
+            for t in range(len(ts)):
+                # Layer several wedges on top of each other to mimic a gradient matching a normal distribution
+                base_x = ts[t]
+                base_y = samples[isample, t, ivar]
+                u = 1.0  # dt/dt = 1.0 everywhere
+                v = drift[isample, t, ivar]
+                stack_wedges(ax[ivar], base_x, base_y, u, v, diffusion[isample, t, ivar], 10, scale=scale)
+
+    plt.show()
 
 
 def make_plots():
