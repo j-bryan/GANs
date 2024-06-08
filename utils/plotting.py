@@ -52,6 +52,8 @@ class TrainingPlotter:
             ax[varname].set_ylabel(varname)
 
         for j, lossname in enumerate(self._loss_names):
+            if lossname not in losses:
+                continue
             ax[lossname].set_title(lossname)
             ax[lossname].plot(losses[lossname])
 
@@ -109,11 +111,12 @@ class SDETrainingPlotter(TrainingPlotter):
         t = np.arange(samples.shape[1])
         for i, varname in enumerate(self._samples_names):
             for sample in samples:
-                # ax[varname].plot(sample[:, 0], sample[:, i + 1])  # first row is time
                 ax[varname].plot(t, sample[:, i])  # first row is time
             ax[varname].set_ylabel(varname)
 
         for j, lossname in enumerate(self._loss_names):
+            if lossname not in losses:
+                continue
             ax[lossname].set_title(lossname)
             ax[lossname].plot(losses[lossname])
 

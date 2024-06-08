@@ -19,7 +19,7 @@ from utils import get_accelerator_device
 from dataclasses import dataclass
 from models.layers import FFNNConfig
 
-from evaluate_sde import plot_gradients
+from evaluate_sde import plot_model_results
 
 
 @dataclass
@@ -158,7 +158,12 @@ def train_sdegan(params_file: str = None,
                                                  batch_size=params['batch_size'],
                                                  device=device)
 
-    optimizer_G = Adam(G.parameters(), lr=params['gen_lr'], betas=params['gen_betas'])
+    optimizer_G = Adam([
+            {"params": G._initial.parameters(), "lr": 5*params["gen_lr"]},
+            # {"params": G._initial.parameters()},
+            {"params": G._func.parameters()},
+            {"params": G._readout.parameters()}
+        ], lr=params['gen_lr'], betas=params['gen_betas'])
     optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
 
     if warm_start and params_file is not None:
@@ -175,13 +180,12 @@ def train_sdegan(params_file: str = None,
                             critic_iterations=params['critic_iterations'],
                             plotter=plotter,
                             device=device,
-                            silent=silent)
+                            silent=silent,
+                            swa=True)
 
     plot_every  = max(1, params['epochs'] // 100)
     print_every = max(1, params['epochs'] // 30)
     trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=plot_every, print_every=print_every)
-
-    plot_gradients(G, params["variables"], transformer)
 
     if no_save:
         return
@@ -205,6 +209,10 @@ def train_sdegan(params_file: str = None,
     torch.save(G.state_dict(), dirname + f'sde_gen_{iso}_{varnames_abbrev}_{postfix}.pt')
     torch.save(D.state_dict(), dirname + f'sde_dis_{iso}_{varnames_abbrev}_{postfix}.pt')
 
+    if trainer._swa:
+        torch.save(trainer.G_swa.state_dict(), dirname + f'sde_gen_swa_{iso}_{varnames_abbrev}_{postfix}.pt')
+        torch.save(trainer.D_swa.state_dict(), dirname + f'sde_dis_swa_{iso}_{varnames_abbrev}_{postfix}.pt')
+
     # Save parameters
     params['total_epochs_trained'] += params['epochs']
     params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -212,6 +220,10 @@ def train_sdegan(params_file: str = None,
     filename = params_file if params_file is not None else dirname + f'params_sde_{iso}_{varnames_abbrev}_{postfix}.json'
     with open(filename, 'w') as f:
         json.dump(params, f)
+
+    plot_model_results(G, transformer, params["variables"],
+                       G_swa=trainer.G_swa if trainer._swa else None,
+                       dir_suffix=f"ep{params['epochs']}_hidden{params['hidden_size']}_swa")
 
 
 if __name__ == '__main__':

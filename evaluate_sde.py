@@ -6,15 +6,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib.patches import Wedge
-matplotlib.use("TkAgg")
 
 from scipy.stats import norm
 
 import torch
 
-from models.forcing import DawnDuskSampler
-from models.sde_no_embed import SampledInitialCondition
-# from models.sde_statespace import Generator, DiscriminatorSimple
 from models.sde import Generator, DiscriminatorSimple
 from dataloaders import get_sde_dataloader
 
@@ -24,7 +20,7 @@ from statsmodels.tsa.stattools import acf, ccf
 COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 
 
-def plot_samples(data, columns, n_samples=10):
+def plot_samples(data, columns, n_samples=10, dirname="plots/sde"):
     for i, var in enumerate(columns):
         plt.figure()
         lines = []
@@ -34,11 +30,11 @@ def plot_samples(data, columns, n_samples=10):
         plt.ylabel(var)
         plt.xlabel("Hour of Day")
         plt.legend([l[0] for l in lines], list(data.keys()))
-        plt.savefig(f"plots/sde/samples_{var}.png", dpi=300)
+        plt.savefig(os.path.join(dirname, f"samples_{var}.png"), dpi=300)
         plt.close()
 
 
-def plot_histograms(data, columns, is_diff=False):
+def plot_histograms(data, columns, is_diff=False, dirname="plots/sde"):
     for i, var in enumerate(columns):
         plt.figure()
         sample_min = np.inf
@@ -59,11 +55,11 @@ def plot_histograms(data, columns, is_diff=False):
         plt.xlabel("Value")
         plt.ylabel("Density")
         plt.legend()
-        plt.savefig(f"plots/sde/histogram_{'diff_' if is_diff else ''}{var}.png", dpi=300)
+        plt.savefig(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}.png"), dpi=300)
         plt.close()
 
 
-def plot_acf(data, columns):
+def plot_acf(data, columns, dirname="plots/sde"):
     for i, var in enumerate(columns):
         plt.figure()
         for k, v in data.items():
@@ -73,10 +69,10 @@ def plot_acf(data, columns):
         plt.xlabel("Lag")
         plt.ylabel("Autocorrelation")
         plt.legend()
-        plt.savefig(f"plots/sde/acf_{var}.png", dpi=300)
+        plt.savefig(os.path.join(dirname, f"acf_{var}.png"), dpi=300)
 
 
-def plot_xcf(data, columns):
+def plot_xcf(data, columns, dirname="plots/sde"):
     for idx_var1, var in enumerate(columns):
         for idx_var2, var2 in enumerate(columns):
             if idx_var1 <= idx_var2:  # No auto-correlation, no repeated pairs
@@ -92,7 +88,7 @@ def plot_xcf(data, columns):
             plt.ylabel("Cross-Correlation")
             plt.title(f"{var} vs {var2}")
             plt.legend()
-            plt.savefig(f"plots/sde/ccf_{var}_{var2}.png", dpi=300)
+            plt.savefig(os.path.join(dirname, "ccf_{var}_{var2}.png"), dpi=300)
 
 
 def stack_wedges(ax, base_x: float, base_y: float, u: float, v: float, std: float, n: int = 1, scale: float = 0.25):
@@ -117,9 +113,9 @@ def stack_wedges(ax, base_x: float, base_y: float, u: float, v: float, std: floa
         ax.add_patch(Wedge((base_x, base_y), scale, theta1, theta2, color="red", alpha=1/(n+1)))
 
 
-def plot_gradients(model: Generator, varnames: list[str], transformer):
+def plot_gradients(model: Generator, init_noise, varnames: list[str], transformer, dirname="plots/sde"):
     # Sample the model
-    samples, drift, diffusion = model.sample(128, gradients=True)
+    samples, drift, diffusion = model(init_noise, gradients=True)
     samples = samples.detach().cpu().numpy()
     drift = drift.detach().cpu().numpy()
     diffusion = diffusion.detach().cpu().numpy()
@@ -149,109 +145,74 @@ def plot_gradients(model: Generator, varnames: list[str], transformer):
                 v = drift[isample, t, ivar]
                 stack_wedges(ax[ivar], base_x, base_y, u, v, diffusion[isample, t, ivar], 10, scale=scale)
 
-    plt.show()
+    if isinstance(model, Generator):
+        fig.savefig(os.path.join(dirname, "gradients.png"), dpi=300)
+    else:
+        fig.savefig(os.path.join(dirname, "gradients_swa.png"), dpi=300)
+    plt.close(fig)
 
 
-def make_plots():
-    data = {
-        "Historical": pd.read_csv("dataloaders/data/ercot.csv", index_col=0),
-        "SDE": pd.read_csv("ercot_samples_sde.csv"),
-        "DGAN": pd.read_csv("ercot_samples_dgan.csv")
+def plot_model_results(
+    G: Generator,
+    transformer,
+    varnames: list[str],
+    G_swa: Generator | None = None,
+    n_samples: int = 1826,
+    dir_suffix: str = ""
+):
+    init_noise = G.sample_latent(n_samples)
+    samples = G(init_noise)
+    sde_samples = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=varnames)
+    sde_samples.to_csv(f"ercot_samples_sde.csv", index=False)
+
+    data_locations = {
+        "Historical": ("dataloaders/data/ercot.csv", dict(index_col=0)),
+        "DGAN": ("ercot_samples_dgan.csv", dict()),
     }
-    data["Historical"].pop("PRICE")
-    columns = list(data["Historical"].columns)
-    data = {k: v.values.reshape(-1, 24, len(columns)) for k, v in data.items()}
-    np.random.shuffle(data["Historical"])
-    os.makedirs("plots/sde", exist_ok=True)
+
+    data = {}
+    for k, (fpath, kwargs) in data_locations.items():
+        if os.path.exists(fpath):
+            data[k] = pd.read_csv(fpath, **kwargs)
+    data["SDE"] = sde_samples
+    if G_swa is not None:
+        samples_swa = G_swa(init_noise)
+        sde_samples_swa = pd.DataFrame(np.vstack(transformer.inverse_transform(samples_swa).detach().cpu().numpy()), columns=varnames)
+        sde_samples_swa.to_csv(f"ercot_samples_sde_swa.csv", index=False)
+        data["SDE_SWA"] = sde_samples_swa
+
+    if "Historical" in data:
+        data["Historical"].pop("PRICE")
+    data = {k: v.values.reshape(-1, 24, len(varnames)) for k, v in data.items()}
+
+    if "Historical" in data:
+        np.random.shuffle(data["Historical"])
+
+    suffix = dir_suffix if dir_suffix == "" else f"_{dir_suffix}"
+    dirname = f"plots/sde{suffix}"
+    os.makedirs(dirname, exist_ok=True)
 
     # Plot the samples, with each variable in a separate plot
-    plot_samples(data, columns)
+    plot_samples(data, varnames, dirname=dirname)
 
     # Plot a histogram of the samples. The bars of the generated and historical data should be side
     # by side, not stacked or overlapping.
-    plot_histograms(data, columns)
+    plot_histograms(data, varnames, dirname=dirname)
 
     # Plot a histogram of the first differences of the samples. Again, we use side by side bars.
     first_diffs = {k: np.diff(v, axis=1) for k, v in data.items()}
-    plot_histograms(first_diffs, columns, is_diff=True)
+    plot_histograms(first_diffs, varnames, is_diff=True, dirname=dirname)
 
     # Calculate the autocorrelation of the samples and the historical data, calculated for each
     # sample. The mean and 95% confidence intervals are plotted. We use the first N//2 lags.
-    plot_acf(data, columns)
+    plot_acf(data, varnames, dirname=dirname)
 
     # Calculate the lagged cross-correlation between each variable for the generated and historical
     # data. Plot lags -N//2 to N//2.
-    plot_xcf(data, columns)
+    plot_xcf(data, varnames, dirname=dirname)
 
-
-def main(
-    params_file: str,
-    n_samples: int = 1826,
-):
-    with open(params_file, 'r') as f:
-            params = json.load(f)
-
-    # Find the most appropriate device for training
-    device = "cpu"
-
-    if isinstance(params['variables'], str):
-        params['variables'] = [params['variables']]
-
-    # seed for reproducibility
-    np.random.seed(params['random_seed'])
-    torch.manual_seed(params['random_seed'])
-
-    # Load the data from file and return as a DataLoader. Some additional transformations may have
-    # been applied to the data and are returned as well.
-    dataloader, transformer = get_sde_dataloader(iso=params['ISO'],
-                                                 varname=params['variables'],
-                                                 segment_size=params['time_series_length'],
-                                                 batch_size=params['batch_size'],
-                                                 device=device)
-
-    # Some of the data is bad! We define that solar values must be 0 at night, which we determine to
-    # be the hours 0, 1, 2, 3, 4, 21, 22, and 23. We'll set the values at these time steps to 0.
-    solar = dataloader.dataset[..., params["variables"].index("SOLAR")]
-    solar[:, [0, 1, 2, 3, 4, 21, 22, 23]] = 0.0
-    dataset = dataloader.dataset
-    dataset[..., params["variables"].index("SOLAR")] = solar
-    # Write these values to file to load more easily for plotting
-    historical_samples = pd.DataFrame(np.vstack(dataset.cpu().numpy()), columns=params['variables'])
-    historical_samples.to_csv(f"ercot_samples_historical.csv", index=False)
-    # Remake the dataloader
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=params['batch_size'], shuffle=True)
-    params["batch_size"] = len(dataloader)
-    dawn_dusk_sampler = DawnDuskSampler(solar)
-
-    # The initial condition for the main state variables are sampled directly from the data.
-    initial_condition = SampledInitialCondition(data=dataloader.dataset)
-    state_size = len(params['variables'])
-
-    G = Generator(initial_condition=initial_condition,
-                  time_size=params['time_series_length'],
-                  state_size=state_size,
-                  noise_size=params['noise_size'],
-                  f_num_units=params['gen_f_num_units'],
-                  f_num_layers=params['gen_f_num_layers'],
-                  g_num_units=params['gen_g_num_units'],
-                  g_num_layers=params['gen_g_num_layers'],
-                  aux_size=params['aux_size'],
-                  varnames=params['variables'],
-                  aux_ou=params['aux_ou'],
-                  dawn_dusk_sampler=dawn_dusk_sampler).to(device)
-    D = DiscriminatorSimple(data_size=state_size,
-                            time_size=params['time_series_length'],
-                            num_layers=params['dis_num_layers'],
-                            num_units=params['dis_num_units']).to(device)
-
-    G.load_state_dict(torch.load(f'saved_models/sde/sde_gen_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
-    D.load_state_dict(torch.load(f'saved_models/sde/sde_dis_{params["ISO"]}_{"".join([v.lower()[0] for v in params["variables"]])}.pt'))
-
-    samples = G.sample(n_samples)
-    sde_samples = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=params['variables'])
-    sde_samples.to_csv(f"ercot_samples_sde.csv", index=False)
-
-
-if __name__ == "__main__":
-    # fire.Fire(main)
-    make_plots()
+    # Plot the gradients of the model. This is a bit more involved, as we need to sample the model
+    # and calculate the gradients of the drift and diffusion functions.
+    grad_init_noise = G.sample_latent(128)
+    plot_gradients(G, grad_init_noise, varnames, transformer, dirname=dirname)
+    plot_gradients(G_swa, grad_init_noise, varnames, transformer, dirname=dirname)
