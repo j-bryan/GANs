@@ -187,19 +187,29 @@ class Generator(torch.nn.Module):
         if gradients:
             # Use the generated samples to calculate gradients in the observed space of Y_t
             f = torch.zeros(batch_size, self._time_steps, self._hidden_size)
-            g = torch.zeros(batch_size, self._time_steps, self._hidden_size)
-            for i in range(self._time_steps):
-                f[:, i], g[:, i] = self._func.f_and_g(ts[i], xs[:, i])
+            if self._func.noise_type == "diagonal":
+                g = torch.zeros(batch_size, self._time_steps, self._hidden_size)
+                for i in range(self._time_steps):
+                    f[:, i], g[:, i] = self._func.f_and_g(ts[i], xs[:, i])
+                # Since we're treating time like a state variable here, we need to add a 1 to the beginning
+                # of the f tensor and a 0 to the beginning of the g tensor.
+                f = torch.cat([torch.ones(batch_size, self._time_steps, 1), f], dim=2).unsqueeze(-1)
+                g = torch.cat([torch.zeros(batch_size, self._time_steps, 1), g], dim=2).unsqueeze(-1)
+            elif self._func.noise_type == "general":
+                g = torch.zeros(batch_size, self._time_steps, self._hidden_size, self._func._noise_size)
+                for i in range(self._time_steps):
+                    f[:, i], g[:, i] = self._func.f_and_g(ts[i], xs[:, i])
+                # Since we're treating time like a state variable here, we need to add a 1 to the beginning
+                # of the f tensor and a 0 to the beginning of the g tensor.
+                f = torch.cat([torch.ones(batch_size, self._time_steps, 1), f], dim=2).unsqueeze(-1)
+                g = torch.cat([torch.zeros(batch_size, self._time_steps, 1, g.size(-1)), g], dim=2)
+
             readout_jacobian = torch.zeros((batch_size, self._time_steps, ys.size(-1), self._hidden_size + 1))
             # We need to calculate the jacobian of the readout layer with respect to the hidden state
             # of the SDE for each time step and each batch.
             for i in range(batch_size):
                 for j in range(self._time_steps):
                     readout_jacobian[i, j] = torch.autograd.functional.jacobian(self._readout, tx[i, j, :]).squeeze()
-            # Since we're treating time like a state variable here, we need to add a 1 to the beginning
-            # of the f tensor and a 0 to the beginning of the g tensor.
-            f = torch.cat([torch.ones(batch_size, self._time_steps, 1), f], dim=2).unsqueeze(-1)
-            g = torch.cat([torch.zeros(batch_size, self._time_steps, 1), g], dim=2).unsqueeze(-1)
             # With readout_jacobian of shape (batch_size, time_steps, data_size, hidden_size + 1)
             drift = torch.matmul(readout_jacobian, f).squeeze(-1)
             diffusion = torch.matmul(readout_jacobian, g).squeeze(-1)

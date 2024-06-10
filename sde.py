@@ -152,11 +152,13 @@ def train_sdegan(params_file: str = None,
 
     G = Generator(sde_generator_config).to(device)
     D = DiscriminatorSimple(discriminator_config).to(device)
-    dataloader, transformer = get_sde_dataloader(iso=params['ISO'],
-                                                 varname=params['variables'],
-                                                 segment_size=params['time_series_length'],
-                                                 batch_size=params['batch_size'],
-                                                 device=device)
+    dataloader, _, _, transformer = get_sde_dataloader(
+        iso=params['ISO'],
+        varname=params['variables'],
+        segment_size=params['time_series_length'],
+        batch_size=params['batch_size'],
+        device=device
+    )
 
     optimizer_G = Adam([
             {"params": G._initial.parameters(), "lr": 5*params["gen_lr"]},

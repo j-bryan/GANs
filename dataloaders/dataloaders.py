@@ -101,7 +101,9 @@ def get_sde_dataloader(iso: str,
                        varname: Union[list[str], str],
                        segment_size: int = 24,
                        batch_size: int = 32,
-                       device: str = "cpu") -> DataLoader:
+                       device: str = "cpu",
+                       test_size: float = 0.0,
+                       valid_size: float = 0.0) -> DataLoader:
     """
     Creates a pytorch dataloader from the specified data. Differs from the standard dataloader in
     that it interpolates the data for use with continuous-time models (e.g. SDEs).
@@ -116,14 +118,26 @@ def get_sde_dataloader(iso: str,
         The number of time steps to include in each sample.
     batch_size : int (default: 32)
         The batch size.
-    preprocessor : Pipeline (default: None)
-        A sklearn pipeline to preprocess the data.
+    device : str (default: "cpu")
+        The device to load the data on.
+    test_size : float (default: 0.0)
+        The proportion of the data to use as a test set. If 0, all data is used for training. Must
+        be between 0 and 1.
+    valid_size : float (default: 0.0)
+        The proportion of the data to use as a validation set. If 0, no validation set is used. Must
+        be between 0 and 1.
 
     Returns
     -------
     dataloader : DataLoader
         A pytorch DataLoader object.
     """
+    if not 0 <= test_size <= 1:
+        raise ValueError("test_size must be between 0 and 1")
+    if test_size + valid_size >= 1:
+        raise ValueError(f"test_size + valid_size must be less than 1. Got test_size={test_size} and "
+                         f"valid_size={valid_size}, so test_size + valid_size = {test_size + valid_size}")
+
     data = pd.read_csv(f"dataloaders/data/{iso.lower()}.csv")[varname]
     if "SOLAR" in varname:
         # Some solar data has non-zero values at night
@@ -134,6 +148,14 @@ def get_sde_dataloader(iso: str,
     data = data.to_numpy()
     data = torch.Tensor(data.reshape(-1, segment_size, len(varname)))
 
+    idx = np.arange(len(data))
+    np.random.shuffle(idx)
+    i_train_split = int(len(data) * (1 - test_size - valid_size))
+    i_valid_split = int(len(data) * (1 - test_size))
+    train_data = data[idx[:i_train_split]]
+    valid_data = data[idx[i_train_split:i_valid_split]] if valid_size > 0 else None
+    test_data = data[idx[i_valid_split:]] if test_size > 0 else None
+
     load_transformer = StandardScaler()
     if "TOTALLOAD" in varname:
         transformer = InvertibleColumnTransformer(
@@ -142,11 +164,23 @@ def get_sde_dataloader(iso: str,
             },
             columns=varname
         )
-        Xt = transformer.fit_transform(data)
+        Xt = transformer.fit_transform(train_data)
     else:
-        Xt = data
+        Xt = train_data
         transformer = Passthrough()
 
-    dataloader = torch.utils.data.DataLoader(Xt.to(device), batch_size=batch_size, shuffle=True)
+    train_dataloader = torch.utils.data.DataLoader(Xt.to(device), batch_size=batch_size, shuffle=True)
 
-    return dataloader, transformer
+    if test_data is not None:
+        test_data = transformer.transform(test_data)
+        test_dataloader = torch.utils.data.DataLoader(test_data.to(device), batch_size=batch_size, shuffle=False)
+    else:
+        test_dataloader = None
+
+    if valid_data is not None:
+        valid_data = transformer.transform(valid_data)
+        valid_dataloader = torch.utils.data.DataLoader(valid_data.to(device), batch_size=batch_size, shuffle=False)
+    else:
+        valid_dataloader = None
+
+    return train_dataloader, test_dataloader, valid_dataloader, transformer

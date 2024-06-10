@@ -56,7 +56,6 @@ class Trainer:
         self.G_opt = g_optimizer
         self.D_opt = d_optimizer
         self.losses = {}
-        self.num_steps = 0
         self.critic_iterations = critic_iterations
 
         self._fixed_latent = None
@@ -142,20 +141,38 @@ class Trainer:
         data_loader : torch.utils.data.DataLoader
             The data loader for the training data.
         """
-        epoch_losses = defaultdict(float)
-        n_iter = len(data_loader)
+        n_iter_generator = 0
+        n_iter_critic    = 0
+
+        g_losses = defaultdict(float)
+        d_losses = defaultdict(float)
+
         for i, data in enumerate(data_loader):
-            self.num_steps += 1
+            n_iter_critic += 1
             critic_losses    = self._critic_train_iteration(data)
-            generator_losses = self._generator_train_iteration(data.size()[0])
-            for k, v in generator_losses.items():
-                epoch_losses[k] += v
             for k, v in critic_losses.items():
-                epoch_losses[k] += v
-            # if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
-            #     self._generator_train_iteration(data.size()[0])
-        for k in epoch_losses.keys():
-            epoch_losses[k] /= n_iter
+                d_losses[k] += v
+
+            if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
+                n_iter_generator += 1
+                generator_losses = self._generator_train_iteration(data.size()[0])
+                for k, v in generator_losses.items():
+                    g_losses[k] += v
+
+        # Catches issues if something is mis-specified and results in no training of one model or
+        # the other. Also prevents division by zero when calculating the average loss values for the
+        # epoch.
+        if n_iter_generator == 0:
+            raise ValueError("Generator did not have any iterations this epoch!")
+        if n_iter_critic == 0:
+            raise ValueError("Critic did not have any iterations this epoch!")
+
+        epoch_losses = {}
+        for k, v in g_losses.items():
+            epoch_losses[k] = v / n_iter_generator
+        for k, v in d_losses.items():
+            epoch_losses[k] = v / n_iter_critic
+
         return epoch_losses
 
     def train(self,
@@ -227,6 +244,57 @@ class Trainer:
                 self._plot_training_sample(epoch + 1, losses, save_frame=save_frame)
 
         self.losses = losses
+
+    def evaluate(self, data_loader: torch.utils.data.DataLoader) -> dict:
+        """
+        Evaluate the model on a data loader.
+
+        Parameters
+        ----------
+        data_loader : torch.utils.data.DataLoader
+            The data loader for the evaluation data.
+
+        Returns
+        -------
+        losses : dict
+            The losses on the evaluation data.
+        """
+        self.G.eval()
+        self.D.eval()
+
+        losses = defaultdict(float)
+        n_batches = 0
+        for data in data_loader:
+            batch_size = data.size()[0]
+            latent = self.G.sample_latent(batch_size).to(self.device)
+            generated_data, = self.G(latent)
+
+            data = Variable(data).to(self.device)
+            d_real = self.D(data)
+            d_generated = self.D(generated_data)
+
+            d_loss = d_generated.mean() - d_real.mean()
+            g_loss = -d_generated.mean()
+
+            losses['G'] += g_loss.data.item()
+            losses['D'] += d_loss.data.item()
+
+            if self._swa:
+                generated_data_swa, = self.G_swa(latent)
+                d_real_swa = self.D_swa(data)
+                d_generated_swa = self.D_swa(generated_data_swa)
+                d_loss_swa = d_generated_swa.mean() - d_real_swa.mean()
+                g_loss_swa = -d_generated_swa.mean()
+
+                losses['G_swa'] += g_loss_swa.data.item()
+                losses['D_swa'] += d_loss_swa.data.item()
+
+            n_batches += 1
+
+        for k, v in losses.items():
+            losses[k] /= n_batches
+
+        return losses
 
     def _plot_training_sample(self, epoch: int, losses: dict, save_frame: bool = False) -> None:
         """

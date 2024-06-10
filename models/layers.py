@@ -86,17 +86,30 @@ class FFNN(torch.nn.Module):
         if final_activation_kwargs is None:
             final_activation_kwargs = {}
 
+        # Handle the case of a single layer
+        if num_layers == 1:
+            model = [torch.nn.Linear(in_size, out_size)]
+            if isinstance(final_activation, str):
+                model.append(activations.get(final_activation.lower())(**final_activation_kwargs))
+            else:  # final_activation is a list of activations
+                final_activations = torch.nn.ModuleList([activations.get(act.lower())(**final_activation_kwargs) for act in final_activation])
+                model.append(FeaturewiseActivation(final_activations))
+            self._model = torch.nn.Sequential(*model)
+            return
+
         model = [torch.nn.Linear(in_size, num_units),
                  activations.get(activation.lower())(**activation_kwargs)]
         for _ in range(num_layers - 1):
             model.append(torch.nn.Linear(num_units, num_units))
             model.append(activations.get(activation.lower())(**activation_kwargs))
         model.append(torch.nn.Linear(num_units, out_size))
+
         if isinstance(final_activation, str):
             model.append(activations.get(final_activation.lower())(**final_activation_kwargs))
         else:  # final_activation is a list of activations
             final_activations = torch.nn.ModuleList([activations.get(act.lower())(**final_activation_kwargs) for act in final_activation])
             model.append(FeaturewiseActivation(final_activations))
+
         self._model = torch.nn.Sequential(*model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
