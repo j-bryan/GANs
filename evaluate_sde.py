@@ -1,10 +1,8 @@
 import os
-import json
 import fire
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib
 from matplotlib.patches import Wedge
 
 from scipy.stats import norm
@@ -12,13 +10,11 @@ from scipy.stats import wasserstein_distance
 
 import torch
 
-from models.sde import Generator, DiscriminatorSimple
-from dataloaders import get_sde_dataloader
+from models.sde import Generator
 
 from statsmodels.tsa.stattools import acf, ccf
 
 
-# COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
 
 
@@ -43,8 +39,6 @@ def plot_samples(data, columns, n_samples=6, dirname="plots/sde"):
                 hist_min = np.min(historical_sample)
                 hist_max = np.max(historical_sample)
 
-                print("Num values in data", len(data))
-                print("Num colors in list", len(COLORS))
                 for icolor, (k, v) in enumerate(data.items()):
                     if k == "Historical":
                         continue
@@ -226,13 +220,9 @@ def plot_model_results(
     transformer=None,
     varnames: list[str] = ["TOTALLOAD", "WIND", "SOLAR"],
     dirname: str = "",
-    G_swa: Generator | None = None,
     n_samples: int = 1826
 ):
     device = "cpu"
-
-    if G_swa is not None:
-        G_swa = G_swa.to(device)
 
     if G is not None:
         G = G.to(device)
@@ -267,11 +257,6 @@ def plot_model_results(
 
     if G is not None:
         data["SDE"] = sde_samples
-    if G_swa is not None:
-        samples_swa = G_swa(init_noise)
-        sde_samples_swa = pd.DataFrame(np.vstack(transformer.inverse_transform(samples_swa).detach().cpu().numpy()), columns=varnames)
-        sde_samples_swa.to_csv(f"ercot_samples_sde_swa.csv", index=False)
-        data["SDE_SWA"] = sde_samples_swa
 
     if "Historical" in data:
         data["Historical"].pop("PRICE")
@@ -281,9 +266,6 @@ def plot_model_results(
         np.random.shuffle(data["Historical"])
 
     os.makedirs(dirname, exist_ok=True)
-    if G_swa is not None:
-        swa_dirname = os.path.join(dirname, "swa/")
-        os.makedirs(swa_dirname, exist_ok=True)
 
     # Plot the samples, with each variable in a separate plot
     plot_samples(data, varnames, dirname=dirname)

@@ -248,9 +248,7 @@ def tune_sdegan(n_trials: int = 100,
         with open(filename, 'w') as f:
             json.dump(params, f)
 
-        plot_model_results(G, transformer, params["variables"],
-                        G_swa=trainer.G_swa if trainer._swa else None,
-                        dirname=dirname)
+        plot_model_results(G, transformer, params["variables"], dirname=dirname)
 
         return 0
 
