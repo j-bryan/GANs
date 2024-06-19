@@ -2,17 +2,14 @@ import os
 import json
 from datetime import datetime
 import fire
-from uuid import uuid4
 
 import numpy as np
 import torch
-from torch.optim import Adam
-# from sklearn.preprocessing import RobustScaler
-# from sklearn.pipeline import make_pipeline
-# from sklearn.compose import make_column_transformer
+from torch.optim import Adam, AdamW, RMSprop
 
 from models.sde import Generator, DiscriminatorSimple, SdeGeneratorConfig
-from training import WGANClipTrainer, WGANGPTrainer, WGANLPTrainer
+from models.conv import Discriminator
+from training import WGANGPTrainer
 from dataloaders import get_sde_dataloader
 from utils.plotting import SDETrainingPlotter
 from utils import get_accelerator_device
@@ -91,42 +88,45 @@ def tune_sdegan(n_trials: int = 100,
         data_size = len(params["variables"])
         time_size = len(params["time_features"])
 
-        hidden_size = trial.suggest_int("hidden_size", data_size, 128)
-        initial_noise_size = hidden_size
-        sde_noise_size = trial.suggest_int("sde_noise_size", data_size, 128)
-        sde_noise_type = "general"
+        sde_hidden_size = trial.suggest_int("sde_hidden_size", data_size, 128)
+        initial_noise_size = sde_hidden_size
+        sde_noise_size = sde_hidden_size  # must be same as hidden size for diagonal noise
+        sde_noise_type = "diagonal"
 
         # For diagonal noise, we require the SDE noise size and the SDE hidden size to be the same.
         # If they're not, we'll prune the trial.
         # TODO: check to make sure we actually get some "diagonal" trials
-        if sde_noise_type == "diagonal" and sde_noise_size != hidden_size:
+        if sde_noise_type == "diagonal" and sde_noise_size != sde_hidden_size:
             raise optuna.TrialPruned
+
+        num_units = trial.suggest_categorical("num_units", [64, 128, 256, 512])
+        num_hidden_layers = trial.suggest_int("num_hidden_layers", 1, 3)
 
         gen_noise_embed_config = FFNNConfig(
             in_size=initial_noise_size,
-            num_layers=trial.suggest_int("gen_noise_embed_num_layers", 1, 3),
-            num_units=trial.suggest_int("gen_noise_embed_num_units", 16, 128),
-            out_size=hidden_size
+            num_hidden_layers=2,
+            num_units=sde_hidden_size,
+            out_size=sde_hidden_size
         )
         gen_drift_config = FFNNConfig(
-            in_size=hidden_size + time_size,
-            num_layers=trial.suggest_int("gen_drift_num_layers", 1, 3),
-            num_units=trial.suggest_int("gen_drift_num_units", 16, 128),
-            out_size=hidden_size,
+            in_size=sde_hidden_size + time_size,
+            num_hidden_layers=num_hidden_layers,
+            num_units=num_units,
+            out_size=sde_hidden_size,
             final_activation="tanh"
         )
-        diffusion_out_size = hidden_size if sde_noise_type == "diagonal" else hidden_size * sde_noise_size
+        diffusion_out_size = sde_hidden_size if sde_noise_type == "diagonal" else sde_hidden_size * sde_noise_size
         gen_diffusion_config = FFNNConfig(
-            in_size=hidden_size + time_size,
-            num_layers=trial.suggest_int("gen_diffusion_num_layers", 1, 3),
-            num_units=trial.suggest_int("gen_diffusion_num_units", 16, 128),
+            in_size=sde_hidden_size + time_size,
+            num_hidden_layers=num_hidden_layers,
+            num_units=num_units,
             out_size=diffusion_out_size,
             final_activation="tanh"
         )
         gen_readout_config = FFNNConfig(
-            in_size=hidden_size + time_size,
-            num_layers=trial.suggest_int("gen_readout_num_layers", 1, 3),
-            num_units=trial.suggest_int("gen_readout_num_units", 16, 128),
+            in_size=sde_hidden_size + time_size,
+            num_hidden_layers=trial.suggest_int("readout_num_hidden_layers", 0, 3),
+            num_units=trial.suggest_categorical("readout_num_units", [16, 32, 64, 128, 256, 512]),
             out_size=data_size,
             final_activation=[readout_activations[v] for v in params["variables"]]
         )
@@ -138,7 +138,7 @@ def tune_sdegan(n_trials: int = 100,
             data_size=data_size,
             init_noise_size=initial_noise_size,
             noise_size=sde_noise_size,
-            hidden_size=hidden_size,
+            hidden_size=sde_hidden_size,
             drift_config=gen_drift_config,
             diffusion_config=gen_diffusion_config,
             embed_config=gen_noise_embed_config,
@@ -146,33 +146,29 @@ def tune_sdegan(n_trials: int = 100,
         )
         discriminator_config = FFNNConfig(
             in_size=data_size * params["time_series_length"],
-            num_layers=trial.suggest_int("discriminator_num_layers", 1, 5),
-            num_units=trial.suggest_int("discriminator_num_units", 16, 256),
+            num_hidden_layers=num_hidden_layers,
+            num_units=num_units,
             out_size=1
         )
         gen_opt_config = AdamConfig(
-            lr=trial.suggest_float("gen_opt_sde_lr", 5e-6, 5e-4),
-            betas=(
-                trial.suggest_float("gen_opt_beta1", 0.5, 0.9),
-                trial.suggest_float("gen_opt_beta2", 0.9, 0.999)),
-            weight_decay=trial.suggest_float("gen_opt_weight_decay", 1e-6, 1e-3, log=True)
+            lr=5e-5,
+            betas=(0.5, 0.9),
+            weight_decay=1e-2
         )
         dis_opt_config = AdamConfig(
-            lr=trial.suggest_float("dis_opt_lr", 5e-6, 5e-4),
-            betas=(
-                trial.suggest_float("dis_opt_beta1", 0.5, 0.9),
-                trial.suggest_float("dis_opt_beta2", 0.9, 0.999)
-            ),
-            weight_decay=trial.suggest_float("dis_opt_weight_decay", 1e-6, 1e-3, log=True)
+            lr=1e-4,
+            betas=(0.5, 0.9),
+            weight_decay=1e-2
         )
 
         params.update(sde_generator_config.to_dict())
-        params.update(discriminator_config.to_dict(prefix="dis"))
+        # params.update(discriminator_config.to_dict(prefix="dis"))
+        params.update({
+            "dis_num_filters": discriminator_config.num_units,
+            "dis_num_layers": discriminator_config.num_hidden_layers
+        })
         params.update(gen_opt_config.to_dict(prefix="gen"))
         params.update(dis_opt_config.to_dict(prefix="dis"))
-
-        params["gen_opt_noise_embed_lr"] = trial.suggest_float("gen_opt_noise_embed_lr", 5e-6, 5e-4)
-        params["gen_opt_readout_lr"]     = trial.suggest_float("gen_opt_readout_lr",     5e-6, 5e-4)
 
         if isinstance(params['variables'], str):
             params['variables'] = [params['variables']]
@@ -181,15 +177,22 @@ def tune_sdegan(n_trials: int = 100,
         torch.manual_seed(params['random_seed'])
 
         G = Generator(sde_generator_config).to(device)
-        D = DiscriminatorSimple(discriminator_config).to(device)
+        # D = DiscriminatorSimple(discriminator_config).to(device)
+        D = Discriminator(num_filters=params["dis_num_filters"], num_layers=params["dis_num_layers"]).to(device)
+        # Initialize the lazy layers
+        D(torch.randn(1, params["time_series_length"], data_size).to(device))
 
         # We'll use component-specific learning rates
-        optimizer_G = Adam([
-                {"params": G._initial.parameters(), "lr": params["gen_opt_noise_embed_lr"]},
-                {"params": G._func.parameters(), "lr": params["gen_lr"]},
-                {"params": G._readout.parameters(), "lr": params["gen_opt_readout_lr"]}
-            ], lr=params['gen_lr'], betas=params['gen_betas'])
-        optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
+        optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw", "rmsprop"])
+        if optimizer == "adam":
+            optimizer_G = Adam(G.parameters(), lr=params['gen_lr'], betas=params['gen_betas'])
+            optimizer_D = Adam(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
+        elif optimizer == "adamw":
+            optimizer_G = AdamW(G.parameters(), lr=params['gen_lr'], betas=params['gen_betas'])
+            optimizer_D = AdamW(D.parameters(), lr=params['dis_lr'], betas=params['dis_betas'])
+        elif optimizer == "rmsprop":
+            optimizer_G = RMSprop(G.parameters(), lr=params['gen_lr'], weight_decay=params["gen_weight_decay"])
+            optimizer_D = RMSprop(D.parameters(), lr=params['dis_lr'], weight_decay=params["dis_weight_decay"])
 
         plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'], transformer=transformer)
         trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
@@ -197,18 +200,29 @@ def tune_sdegan(n_trials: int = 100,
                                 plotter=plotter,
                                 device=device,
                                 silent=silent,
-                                swa=trial.suggest_categorical("use_swa", [True, False]))
+                                swa=False)
 
         plot_every  = max(1, params['epochs'] // 100)
         print_every = max(1, params['epochs'] // 30)
+
+        # Before we train the model, check to see if the parameters have already been evaluated.
+        # If they have, we can skip training and return the existing value.
+        if not isinstance(trial, optuna.trial.FixedTrial):
+            states_to_consider = (optuna.trial.TrialState.COMPLETE,)
+            trials_to_consider = trial.study.get_trials(deepcopy=False, states=states_to_consider)
+            # Check whether we already evaluated the sampled `(x, y)`.
+            for t in reversed(trials_to_consider):
+                if trial.params == t.params:
+                    # Use the existing value as trial duplicated the parameters.
+                    return t.value
+
         trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=plot_every, print_every=print_every)
 
         # Save the trained models, parameters, and visualizations
         # Create a unique identifier string so we can save all models and plots with reasonable file
         # names. They don't need to be human readable as long as we save the params dictionary with
         # the model results so we can find the model directory given a set of tunable parameters.
-        id = uuid4().hex
-        dirname = f'saved_models/sde_{id}/'
+        dirname = f'saved_models/sde_cnndiscr_hidden{sde_hidden_size}_layers{num_hidden_layers}_units{num_units}_opt{optimizer.title()}/'
         if not os.path.exists(dirname):
             os.makedirs(dirname)
 
@@ -248,9 +262,38 @@ def tune_sdegan(n_trials: int = 100,
 
         return metrics["total"]
 
-    storage = f"sqlite:///optuna.db"
-    study = optuna.create_study(direction="minimize", study_name="sde_gan", storage=storage, load_if_exists=True)
-    study.optimize(objective, n_trials=n_trials)
+    # storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage("sde_gan.log"))
+    # study = optuna.create_study(direction="minimize", study_name="sde_gan", storage=storage, load_if_exists=True)
+    # study.optimize(objective, n_trials=n_trials)
+    fixed = optuna.trial.FixedTrial({
+        "sde_hidden_size": 64,
+        "num_units": 128,
+        "num_hidden_layers": 2,
+        "readout_num_hidden_layers": 1,
+        "readout_num_units": 64,
+        "optimizer": "adam"
+    })
+    objective(fixed)
+
+    fixed = optuna.trial.FixedTrial({
+        "sde_hidden_size": 64,
+        "num_units": 128,
+        "num_hidden_layers": 2,
+        "readout_num_hidden_layers": 1,
+        "readout_num_units": 64,
+        "optimizer": "adamw"
+    })
+    objective(fixed)
+
+    fixed = optuna.trial.FixedTrial({
+        "sde_hidden_size": 64,
+        "num_units": 128,
+        "num_hidden_layers": 2,
+        "readout_num_hidden_layers": 1,
+        "readout_num_units": 64,
+        "optimizer": "rmsprop"
+    })
+    objective(fixed)
 
 
 if __name__ == '__main__':

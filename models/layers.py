@@ -6,7 +6,7 @@ from dataclasses import dataclass
 class FFNNConfig:
     in_size: int
     num_units: int
-    num_layers: int
+    num_hidden_layers: int
     out_size: int
     activation: str = "lipswish"
     final_activation: str = "identity"
@@ -56,7 +56,7 @@ class FFNN(torch.nn.Module):
                  in_size: int,
                  out_size: int,
                  num_units: int,
-                 num_layers: int,
+                 num_hidden_layers: int,
                  activation: str = 'lipswish',
                  activation_kwargs: dict = None,
                  final_activation: str | list[str] = 'identity',
@@ -72,7 +72,7 @@ class FFNN(torch.nn.Module):
             The size of the output.
         num_units : int
             The size of the hidden layers.
-        num_layers : int
+        num_hidden_layers : int
             The number of hidden layers.
         activation : str (default: 'lipswish')
             The activation function to use for the hidden layers.
@@ -91,7 +91,7 @@ class FFNN(torch.nn.Module):
             final_activation_kwargs = {}
 
         # Handle the case of a single layer
-        if num_layers == 1:
+        if num_hidden_layers == 0:
             model = [torch.nn.Linear(in_size, out_size)]
             if isinstance(final_activation, str):
                 model.append(activations.get(final_activation.lower())(**final_activation_kwargs))
@@ -103,7 +103,7 @@ class FFNN(torch.nn.Module):
 
         model = [torch.nn.Linear(in_size, num_units),
                  activations.get(activation.lower())(**activation_kwargs)]
-        for _ in range(num_layers - 1):
+        for _ in range(num_hidden_layers):
             model.append(torch.nn.Linear(num_units, num_units))
             model.append(activations.get(activation.lower())(**activation_kwargs))
         model.append(torch.nn.Linear(num_units, out_size))

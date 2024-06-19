@@ -18,19 +18,47 @@ from dataloaders import get_sde_dataloader
 from statsmodels.tsa.stattools import acf, ccf
 
 
-COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+# COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
 
 
-def plot_samples(data, columns, n_samples=10, dirname="plots/sde"):
+def plot_samples(data, columns, n_samples=6, dirname="plots/sde"):
     for i, var in enumerate(columns):
-        plt.figure()
-        lines = []
-        for icolor, (k, v) in enumerate(data.items()):
-            j = columns.index(var)
-            lines.append(plt.plot(v[:n_samples, :, j].T, color=COLORS[icolor], linewidth=0.5, label=k))
+        nrows = np.floor(np.sqrt(n_samples)).astype(int)
+        ncols = np.ceil(n_samples / nrows).astype(int)
+        n_samples = nrows * ncols
+        fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=(5 * ncols, 5 * nrows))
+
+        # Plot one sample from each item of data in each subplot. Find the minimum and maximum value
+        # of the "Historical" data sample and find a sample from the generated data that is closest
+        # to that range. This will hopefully make the samples more comparable.
+
+        for irow in range(nrows):
+            for icol in range(ncols):
+                ax[irow, icol].set_xlabel("Hour of Day")
+                ax[irow, icol].set_ylabel(var)
+
+                historical_sample = data["Historical"][np.random.randint(data["Historical"].shape[0]), :, i]
+                ax[irow, icol].plot(historical_sample, label="Historical", color=COLORS[0])
+                hist_min = np.min(historical_sample)
+                hist_max = np.max(historical_sample)
+
+                print("Num values in data", len(data))
+                print("Num colors in list", len(COLORS))
+                for icolor, (k, v) in enumerate(data.items()):
+                    if k == "Historical":
+                        continue
+                    # Find the sample that is closest to the range of the historical data
+                    sample_idx = np.argmin([np.abs(np.min(v[j, :, i]) - hist_min) + np.abs(np.max(v[j, :, i]) - hist_max) for j in range(v.shape[0])])
+                    ax[irow, icol].plot(v[sample_idx, :, i], color=COLORS[icolor], linewidth=0.5, label=k)
+
+        # for icolor, (k, v) in enumerate(data.items()):
+        #     j = columns.index(var)
+        #     plt.plot(v[:n_samples, :, j].T, color=COLORS[icolor], linewidth=0.5, label=k)
+
         plt.ylabel(var)
         plt.xlabel("Hour of Day")
-        plt.legend([l[0] for l in lines], list(data.keys()))
+        plt.legend()
         plt.savefig(os.path.join(dirname, f"samples_{var}.png"), dpi=300)
         plt.close()
 
@@ -44,20 +72,43 @@ def plot_histograms(data, columns, is_diff=False, dirname="plots/sde"):
             j = columns.index(var)
             sample_min = min(sample_min, np.min(v[..., j]))
             sample_max = max(sample_max, np.max(v[..., j]))
-        bins = np.linspace(sample_min, sample_max, 50)
+        bins = np.linspace(sample_min, sample_max, 25)
         values = []
         labels = []
         for k, v in data.items():
             values.append(v[..., j].flatten())
             labels.append(k)
         plt.hist(values, bins=bins, label=labels, density=True)
-        # for k, v in data.items():
-        #     plt.hist(v[..., j].flatten(), bins=bins, alpha=0.5, label=k, density=True)
         plt.xlabel("Value")
         plt.ylabel("Density")
         plt.legend()
         plt.savefig(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}.png"), dpi=300)
         plt.close()
+
+        import plotly.figure_factory as ff
+
+        # Group data together
+        hist_data = []
+        group_labels = []
+        min_val = None
+        max_val = None
+        key_order = ["Historical", "ARMA", "CNN", "DGAN", "SDE"]
+        for k in key_order:
+            if k not in data:
+                continue
+            v = data[k]
+            j = columns.index(var)
+            vals = v[..., j].flatten()
+            hist_data.append(vals)
+            group_labels.append(k)
+            min_val = min(vals) if min_val is None else min(min_val, min(vals))
+            max_val = max(vals) if max_val is None else max(max_val, max(vals))
+        bin_size = (max_val - min_val) / 25
+
+        # Create distplot with custom bin_size
+        # fig = ff.create_distplot(hist_data, group_labels, bin_size=bin_size, show_hist=False)
+        fig = ff.create_distplot(hist_data, group_labels, show_hist=False)
+        fig.write_image(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}_plotly.png"))
 
 
 def plot_acf(data, columns, dirname="plots/sde"):
@@ -171,34 +222,40 @@ def plot_gradients(model: Generator, init_noise, varnames: list[str], transforme
 
 
 def plot_model_results(
-    G: Generator,
-    transformer,
-    varnames: list[str],
-    dirname: str,
+    G: Generator | None = None,
+    transformer=None,
+    varnames: list[str] = ["TOTALLOAD", "WIND", "SOLAR"],
+    dirname: str = "",
     G_swa: Generator | None = None,
     n_samples: int = 1826
 ):
     device = "cpu"
 
-    G = G.to(device)
     if G_swa is not None:
         G_swa = G_swa.to(device)
 
-    init_noise = G.sample_latent(n_samples)
-    samples = G(init_noise)
-    sde_samples = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=varnames)
-    sde_samples.to_csv(f"ercot_samples_sde.csv", index=False)
+    if G is not None:
+        G = G.to(device)
+        init_noise = G.sample_latent(n_samples)
+        samples = G(init_noise)
+        sde_samples = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=varnames)
+        sde_samples.to_csv(f"ercot_samples_sde.csv", index=False)
 
     data_locations = {
         "Historical": ("dataloaders/data/ercot.csv", dict(index_col=0)),
+        "ARMA": ("ercot_samples_arma.csv", dict()),
+        "CNN": ("ercot_samples_cnn.csv", dict()),
         "DGAN": ("ercot_samples_dgan.csv", dict()),
+        "SDE": ("ercot_samples_sde.csv", dict())
     }
 
     data = {}
     for k, (fpath, kwargs) in data_locations.items():
         if os.path.exists(fpath):
             data[k] = pd.read_csv(fpath, **kwargs)
-    data["SDE"] = sde_samples
+
+    if G is not None:
+        data["SDE"] = sde_samples
     if G_swa is not None:
         samples_swa = G_swa(init_noise)
         sde_samples_swa = pd.DataFrame(np.vstack(transformer.inverse_transform(samples_swa).detach().cpu().numpy()), columns=varnames)
@@ -213,8 +270,9 @@ def plot_model_results(
         np.random.shuffle(data["Historical"])
 
     os.makedirs(dirname, exist_ok=True)
-    swa_dirname = os.path.join(dirname, "swa/")
-    os.makedirs(swa_dirname, exist_ok=True)
+    if G_swa is not None:
+        swa_dirname = os.path.join(dirname, "swa/")
+        os.makedirs(swa_dirname, exist_ok=True)
 
     # Plot the samples, with each variable in a separate plot
     plot_samples(data, varnames, dirname=dirname)
@@ -312,3 +370,10 @@ def calculate_metrics(G, historical, transformer, varnames, G_swa=None):
     metrics["total"] = sum([v for k, v in metrics.items() if "wd_" in k])
 
     return metrics
+
+
+if __name__ == "__main__":
+    fire.Fire({
+        "plot": plot_model_results,
+        "metrics": calculate_metrics
+    })
