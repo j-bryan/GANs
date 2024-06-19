@@ -13,6 +13,7 @@ class WGANClipTrainer(Trainer):
                  d_optimizer: torch.optim.Optimizer,
                  weight_clip: float = 0.01,
                  critic_iterations: int = 5,
+                 generator_iterations: int = 1,
                  plotter: TrainingPlotter = None,
                  device: str | None = None) -> None:
         """
@@ -39,7 +40,7 @@ class WGANClipTrainer(Trainer):
             defaulting to CPU.
         """
         super().__init__(generator, discriminator, g_optimizer, d_optimizer,
-                         critic_iterations, plotter, device)
+                         critic_iterations, generator_iterations, plotter, device)
         self.clip = weight_clip
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:

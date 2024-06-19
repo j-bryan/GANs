@@ -184,3 +184,117 @@ def get_sde_dataloader(iso: str,
         valid_dataloader = None
 
     return train_dataloader, test_dataloader, valid_dataloader, transformer
+
+
+class VarLengthTimeSeriesDataLoader:
+    def __init__(
+        self,
+        data: torch.Tensor,
+        max_num_segments: int = 7,
+        batch_size: int = 32,
+        shuffle: bool = True,
+        device: str = "cpu",
+        **kwargs
+    ):
+        self.data = data
+        self.max_num_segments = max_num_segments
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.device = device
+
+    def __iter__(self):
+        # Return a generator that yields batches of data. Each batch uses a segment length of 24
+        # multiplied by a random integer between 1 and max_num_segments. Segments near the end of the
+        # data should wrap around to the beginning. The data are stored in shape (num_samples, num_timesteps, num_vars).
+
+        # Get the indices of the start of each segment
+        if self.shuffle:
+            idx = torch.randperm(len(self.data))
+        else:
+            idx = torch.arange(len(self.data))
+
+        for i in range(0, len(self.data), self.batch_size):
+            batch_idx = idx[i:i + self.batch_size]
+            batch = []
+            batch_num_segments = torch.randint(1, self.max_num_segments + 1, (1,)).item()
+            for j in batch_idx:
+                sample = self.data.roll(shifts=(-j, 0, 0), dims=(0, 1, 2))[:batch_num_segments]
+                sample = sample.flatten(0, 1)
+                batch.append(sample)
+            batch = torch.stack(batch)
+            yield batch.to(self.device)
+
+    def __len__(self):
+        return len(self.data) // self.batch_size
+
+
+def get_sde_dataloader_varlength(
+        iso: str,
+        varname: Union[list[str], str],
+        segment_size: int = 24,
+        max_segments_per_sample: int = 7,
+        batch_size: int = 512,
+        device: str = "cpu") -> DataLoader:
+    """
+    Creates a pytorch dataloader from the specified data. Differs from the standard dataloader in
+    that it interpolates the data for use with continuous-time models (e.g. SDEs). This version creates
+    a dataloader that provides variable-length sequences.
+
+    For now, we'll force segments to be a multiple of 24, always starting at the beginning of a day.
+
+    Parameters
+    ----------
+    iso : str
+        The ISO to load data from.
+    varname : Union[list, str]
+        The variable(s) to load.
+    segment_size : int (default: 24)
+        The number of time steps to include in each sample.
+    batch_size : int (default: 32)
+        The batch size.
+    device : str (default: "cpu")
+        The device to load the data on.
+    test_size : float (default: 0.0)
+        The proportion of the data to use as a test set. If 0, all data is used for training. Must
+        be between 0 and 1.
+    valid_size : float (default: 0.0)
+        The proportion of the data to use as a validation set. If 0, no validation set is used. Must
+        be between 0 and 1.
+
+    Returns
+    -------
+    dataloader : DataLoader
+        A pytorch DataLoader object.
+    """
+    data = pd.read_csv(f"dataloaders/data/{iso.lower()}.csv")[varname]
+    if "SOLAR" in varname:
+        # Some solar data has non-zero values at night
+        solar = data["SOLAR"].values.reshape(-1, 24)
+        night_hours = np.where(solar.mean(axis=0) < 1e-3)[0]
+        solar[:, night_hours] = 0
+        data["SOLAR"] = solar.ravel()
+    data = data.to_numpy()
+
+    # Add the hour of the day as a feature in the first column
+    varname = ["HOUR"] + varname
+    data = np.hstack((np.arange(len(data)).reshape(-1, 1) % 24, data))
+
+    # data to tensor
+    data = torch.Tensor(data.reshape(-1, segment_size, len(varname)))
+
+    load_transformer = StandardScaler()
+    if "TOTALLOAD" in varname:
+        transformer = InvertibleColumnTransformer(
+            transformers={
+                "TOTALLOAD": load_transformer,
+            },
+            columns=varname
+        )
+        Xt = transformer.fit_transform(data)
+    else:
+        Xt = data
+        transformer = Passthrough()
+
+    train_dataloader = VarLengthTimeSeriesDataLoader(Xt.to(device), max_num_segments=max_segments_per_sample, batch_size=batch_size, shuffle=True)
+
+    return train_dataloader, transformer

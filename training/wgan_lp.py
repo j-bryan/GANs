@@ -16,6 +16,7 @@ class WGANLPTrainer(Trainer):
                  d_optimizer: torch.optim.Optimizer,
                  penalty_weight: float = 10.0,
                  critic_iterations: int = 5,
+                 generator_iterations: int = 1,
                  plotter: TrainingPlotter = None,
                  device: str | None = None) -> None:
         """
@@ -42,7 +43,7 @@ class WGANLPTrainer(Trainer):
             defaulting to CPU.
         """
         super().__init__(generator, discriminator, g_optimizer, d_optimizer,
-                         critic_iterations, plotter, device)
+                         critic_iterations, generator_iterations, plotter, device)
         self.penalty_weight = penalty_weight
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:
@@ -56,7 +57,7 @@ class WGANLPTrainer(Trainer):
         """
         # Get generated data
         batch_size = data.size()[0]
-        generated_data = self.sample_generator(batch_size)
+        generated_data = self.sample_generator(batch_size, time_steps=data.size(1))
 
         # Calculate probabilities on real and generated data
         data = Variable(data).to(self.device)
@@ -74,5 +75,7 @@ class WGANLPTrainer(Trainer):
         d_loss = d_generated.mean() - d_real.mean() + self.penalty_weight * penalty ** 2
         # Record loss
         d_loss.backward()
-        self.losses['D'].append(d_loss.data.item())
         self.D_opt.step()
+
+        losses = {"D": d_loss.data.item(), "LP": penalty.data.item()}
+        return losses

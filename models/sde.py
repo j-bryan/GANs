@@ -29,6 +29,7 @@ class SdeGeneratorConfig:
     noise_type: str = "diagonal"
     time_size: int = 1
     time_steps: int = 24
+    return_ty: bool = False
 
     def to_dict(self):
         d = {}
@@ -37,6 +38,20 @@ class SdeGeneratorConfig:
                 d.update(v.to_dict(prefix=k.split("_")[0]))
             else:
                 d[k] = v
+        return d
+
+
+@dataclass
+class CdeDiscriminatorConfig:
+    data_size: int
+    hidden_size: int
+    mlp_size: int
+    num_layers: int
+
+    def to_dict(self, prefix=""):
+        d = {}
+        for k, v in self.__dict__.items():
+            d[f"{prefix}_{k}"] = v
         return d
 
 
@@ -133,10 +148,14 @@ class Generator(torch.nn.Module):
         self._readout = FFNN(**config.readout_config.to_dict())
         # self._readout = torch.nn.Linear(config.readout_config.in_size, config.readout_config.out_size)
 
+        # Whether or not to include time in the returned samples
+        self.return_ty = config.return_ty
+
     def forward(self,
                 init_noise: torch.Tensor,
                 ts: torch.Tensor = None,
-                gradients: bool = False) -> torch.Tensor:
+                gradients: bool = False,
+                time_steps: int | None = None) -> torch.Tensor:
         """
         Forward pass of the SDE.
 
@@ -152,11 +171,12 @@ class Generator(torch.nn.Module):
         ty_generated : torch.Tensor
             The values of the SDE at the given times. Has shape (batch_size, t_size, data_size).
         """
+        time_steps = time_steps or self._time_steps
         # ts has shape (t_size,) and corresponds to the points we want to evaluate the SDE at.
-        if ts is None and self._time_steps is None:
+        if ts is None and time_steps is None:
             raise ValueError('Either pass in ts or set time_steps in the constructor!')
         elif ts is None:
-            ts = torch.arange(self._time_steps, device=init_noise.device)
+            ts = torch.arange(time_steps, device=init_noise.device)
 
         ###################
         # Actually solve the SDE.
@@ -178,6 +198,7 @@ class Generator(torch.nn.Module):
         # nighttime = ((ts.squeeze() % 24) > 20) | ((ts.squeeze() % 24) < 6)
         # nighttime = nighttime.unsqueeze(-1).float()
         # xs = torch.cat([ts, nighttime, xs], dim=2)
+        ts = ts % 24  # normalize time to 24 hours for readout and return
         t_state = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
         tx = torch.cat([t_state, xs], dim=2)
         # Apply readout to batches of hidden states one time step at a time
@@ -218,7 +239,13 @@ class Generator(torch.nn.Module):
         if gradients:
             return ys, drift, diffusion
 
-        return ys
+        if not self.return_ty:
+            return ys
+
+        # Append time to first dimension of ys
+        ty = torch.cat([ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1), ys], dim=2)
+
+        return ty
 
     def sample_latent(self,
                       num_samples: int) -> torch.Tensor:
@@ -237,9 +264,9 @@ class Generator(torch.nn.Module):
         """
         return torch.randn(num_samples, self._initial_noise_size)
 
-    def sample(self, num_samples: int = 1, gradients: bool = False) -> torch.Tensor:
+    def sample(self, num_samples: int = 1, gradients: bool = False, time_steps: int | None = None) -> torch.Tensor:
         latent = self.sample_latent(num_samples).to(self._readout.parameters().__next__().data.device)
-        return self(latent, gradients=gradients)
+        return self(latent, gradients=gradients, time_steps=time_steps)
 
 
 ###################
@@ -277,7 +304,7 @@ class DiscriminatorFunc(torch.nn.Module):
             in_size=1 + hidden_size,
             out_size=hidden_size * (1 + data_size),
             num_units=mlp_size,
-            num_layers=num_layers,
+            num_hidden_layers=num_layers,
             activation='lipswish',
             final_activation='tanh'
         )
@@ -308,41 +335,25 @@ class DiscriminatorFunc(torch.nn.Module):
 
 
 class Discriminator(torch.nn.Module):
-    def __init__(self,
-                 data_size: int,
-                 hidden_size: int,
-                 mlp_size: int,
-                 num_layers: int):
+    def __init__(self, config: CdeDiscriminatorConfig) -> None:
         """
         Constructor for the discriminator wrapper.
-
-        Parameters
-        ----------
-        data_size : int
-            The dimensionality of the data (number of variables).
-        hidden_size : int
-            The dimensionality of the CDE state vector. This does not need to match the dimensionality
-            of the data.
-        mlp_size : int
-            The size of the hidden layers in the MLPs.
-        num_layers : int
-            The number of hidden layers in the MLPs.
         """
         super().__init__()
 
         # MLP to map from data space to latent space of discriminator CDE.
         self._initial = FFNN(
-            1 + data_size,
-            hidden_size,
-            mlp_size,
-            num_layers,
+            1 + config.data_size,
+            config.hidden_size,
+            config.mlp_size,
+            config.num_layers,
             activation='lipswish',
             final_activation='sigmoid'
         )
         # The discriminator CDE
-        self._func = DiscriminatorFunc(data_size, hidden_size, mlp_size, num_layers)
+        self._func = DiscriminatorFunc(config.data_size, config.hidden_size, config.mlp_size, config.num_layers)
         # Linear readout layer
-        self._readout = torch.nn.Linear(hidden_size, 1)
+        self._readout = torch.nn.Linear(config.hidden_size, 1)
 
     def forward(self, ys_coeffs: torch.Tensor) -> torch.Tensor:
         """

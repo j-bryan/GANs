@@ -19,6 +19,7 @@ class Trainer:
                  g_optimizer: torch.optim.Optimizer,
                  d_optimizer: torch.optim.Optimizer,
                  critic_iterations: int = 5,
+                 generator_iterations: int = 1,
                  plotter: TrainingPlotter | None = None,
                  device: str | None = None,
                  silent: bool = False,
@@ -57,6 +58,7 @@ class Trainer:
         self.D_opt = d_optimizer
         self.losses = {}
         self.critic_iterations = critic_iterations
+        self.generator_iterations = generator_iterations
 
         self._fixed_latent = None
         self.print_every = 0  # by default, don't print or plot anything
@@ -83,7 +85,7 @@ class Trainer:
         """
         # Get generated data
         batch_size = data.size()[0]
-        generated_data, = self.sample_generator(batch_size)
+        generated_data, = self.sample_generator(batch_size, time_steps=data.size(1))
 
         # Calculate probabilities on real and generated data
         data = Variable(data).to(self.device)
@@ -115,7 +117,8 @@ class Trainer:
         # Get generated data
         # generated_data = self.sample_generator(batch_size)
         # generated_data, f_periodicity_diff, g_periodicity_diff = self.sample_generator(batch_size, t_offset=24, return_fg=True)
-        generated_data = self.sample_generator(batch_size)
+        time_steps = 24 * torch.randint(1, 8, (1,)).item()
+        generated_data = self.sample_generator(batch_size, time_steps=time_steps)
 
         # Calculate loss and optimize
         # The generator outputs a number between 0 and 1, corresponding to the probability that the sample is real.
@@ -141,37 +144,25 @@ class Trainer:
         data_loader : torch.utils.data.DataLoader
             The data loader for the training data.
         """
-        n_iter_generator = 0
-        n_iter_critic    = 0
-
         g_losses = defaultdict(float)
         d_losses = defaultdict(float)
 
-        for i, data in enumerate(data_loader):
-            n_iter_critic += 1
-            critic_losses    = self._critic_train_iteration(data)
-            for k, v in critic_losses.items():
-                d_losses[k] += v
+        for data in data_loader:
+            for i in range(self.critic_iterations):
+                critic_losses = self._critic_train_iteration(data)
+                for k, v in critic_losses.items():
+                    d_losses[k] += v
 
-            if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
-                n_iter_generator += 1
+            for i in range(self.generator_iterations):
                 generator_losses = self._generator_train_iteration(data.size()[0])
                 for k, v in generator_losses.items():
                     g_losses[k] += v
 
-        # Catches issues if something is mis-specified and results in no training of one model or
-        # the other. Also prevents division by zero when calculating the average loss values for the
-        # epoch.
-        if n_iter_generator == 0:
-            raise ValueError("Generator did not have any iterations this epoch!")
-        if n_iter_critic == 0:
-            raise ValueError("Critic did not have any iterations this epoch!")
-
         epoch_losses = {}
         for k, v in g_losses.items():
-            epoch_losses[k] = v / n_iter_generator
+            epoch_losses[k] = v / (len(data_loader) * self.generator_iterations)
         for k, v in d_losses.items():
-            epoch_losses[k] = v / n_iter_critic
+            epoch_losses[k] = v / (len(data_loader) * self.critic_iterations)
 
         return epoch_losses
 
@@ -308,7 +299,7 @@ class Trainer:
         train_sample = self.G(self._fixed_latents)
         self.plotter.update(train_sample, losses, {'epoch': epoch}, save_frame=save_frame)
 
-    def sample_generator(self, num_samples: int) -> torch.Tensor:
+    def sample_generator(self, num_samples: int, time_steps: int | None = None) -> torch.Tensor:
         """
         Sample from the generator.
 
@@ -322,7 +313,7 @@ class Trainer:
         generated_data : torch.Tensor
             The generated data.
         """
-        return self.G.sample(num_samples)
+        return self.G.sample(num_samples, time_steps=time_steps)
 
     def save_training_gif(self, filename: str, duration: int = 5) -> None:
         """

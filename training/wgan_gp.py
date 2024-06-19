@@ -56,7 +56,7 @@ class WGANGPTrainer(Trainer):
         """
         # Get generated data
         batch_size = data.size()[0]
-        generated_data = self.sample_generator(batch_size)
+        generated_data = self.sample_generator(batch_size, time_steps=data.size(1))
 
         # Calculate probabilities on real and generated data
         data = Variable(data).to(self.device)
