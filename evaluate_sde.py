@@ -246,7 +246,7 @@ def plot_model_results(
         sde_samples.to_csv(f"ercot_samples_sde_varlength.csv", index=False)
 
         samples168 = G(init_noise, time_steps=168)
-        samples168 = np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy())
+        samples168 = np.vstack(transformer.inverse_transform(samples168).detach().cpu().numpy())
         if samples168.shape[-1] > len(varnames):  # drop
             samples168 = samples168[..., -len(varnames):]
         sde_samples168 = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=varnames)
