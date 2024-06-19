@@ -35,12 +35,16 @@ class FeaturewiseActivation(torch.nn.Module):
     """
         A module that applies a different activation function to each feature in the input tensor.
     """
-    def __init__(self, activations: torch.nn.ModuleList):
+    def __init__(self, activations: torch.nn.ModuleList, axis: int = -1):
         super().__init__()
         self.activations = torch.nn.ModuleList(activations)
+        self._axis = axis
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return  torch.stack([act(x[..., i]) for i, act in enumerate(self.activations)], dim=-1)
+        if self._axis == -1 or self._axis == 2:
+            return  torch.stack([act(x[..., i]) for i, act in enumerate(self.activations)], dim=-1)
+        elif self._axis == 1:
+            return torch.stack([act(x[:, i]) for i, act in enumerate(self.activations)], dim=1)
 
 
 class FFNN(torch.nn.Module):

@@ -212,6 +212,10 @@ def plot_model_results(
     if "Historical" in data:
         np.random.shuffle(data["Historical"])
 
+    os.makedirs(dirname, exist_ok=True)
+    swa_dirname = os.path.join(dirname, "swa/")
+    os.makedirs(swa_dirname, exist_ok=True)
+
     # Plot the samples, with each variable in a separate plot
     plot_samples(data, varnames, dirname=dirname)
 
@@ -236,6 +240,7 @@ def plot_model_results(
     # grad_init_noise = G.sample_latent(128)
     # plot_gradients(G, grad_init_noise, varnames, transformer, dirname=dirname)
     # plot_gradients(G_swa, grad_init_noise, varnames, transformer, dirname=dirname)
+    # plot_gradients(G_swa, grad_init_noise, varnames, transformer, dirname=swa_dirname)
 
 
 def calculate_metrics(G, historical, transformer, varnames, G_swa=None):
