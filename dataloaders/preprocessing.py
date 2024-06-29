@@ -7,11 +7,14 @@ class StandardScaler:
     Implements a scikit-learn style StandardScaler that is compatible with batched pytorch tensors
     without needing to convert to numpy arrays.
     """
-    def __init__(self):
-        self.mean = None
-        self.std = None
+    def __init__(self, mean=None, std=None):
+        self.mean = mean
+        self.std = std
+        self._fitted = mean is not None and std is not None
 
     def fit(self, X):
+        if self._fitted:
+            return self
         self.mean = X.mean()
         self.std = X.std()
         return self
