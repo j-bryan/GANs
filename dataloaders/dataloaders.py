@@ -4,15 +4,29 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from sklearn.pipeline import Pipeline
+from dataloaders.preprocessing import StandardScaler, FunctionTransformer, InvertibleColumnTransformer
 
 from dataloaders.data.meta import meta
+
+
+class Passthrough:
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X
+
+    def fit_transform(self, X, y=None):
+        return X
+
+    def inverse_transform(self, X):
+        return X
 
 
 class TimeSeriesDataset(torch.utils.data.Dataset):
     def __init__(self,
                  data: pd.DataFrame,
                  segment_size: int,
-                 preprocessor: Pipeline = None,
                  transpose: bool = False) -> None:
         data = data.values.astype(np.float32)
         data = np.atleast_2d(data)
@@ -86,9 +100,10 @@ def get_dataloader(iso: str,
 def get_sde_dataloader(iso: str,
                        varname: Union[list[str], str],
                        segment_size: int = 24,
-                       time_features: Union[list[str], str] = None,
                        batch_size: int = 32,
-                       preprocessor: Pipeline = None) -> DataLoader:
+                       device: str = "cpu",
+                       test_size: float = 0.0,
+                       valid_size: float = 0.0) -> DataLoader:
     """
     Creates a pytorch dataloader from the specified data. Differs from the standard dataloader in
     that it interpolates the data for use with continuous-time models (e.g. SDEs).
@@ -103,50 +118,71 @@ def get_sde_dataloader(iso: str,
         The number of time steps to include in each sample.
     batch_size : int (default: 32)
         The batch size.
-    preprocessor : Pipeline (default: None)
-        A sklearn pipeline to preprocess the data.
+    device : str (default: "cpu")
+        The device to load the data on.
+    test_size : float (default: 0.0)
+        The proportion of the data to use as a test set. If 0, all data is used for training. Must
+        be between 0 and 1.
+    valid_size : float (default: 0.0)
+        The proportion of the data to use as a validation set. If 0, no validation set is used. Must
+        be between 0 and 1.
 
     Returns
     -------
     dataloader : DataLoader
         A pytorch DataLoader object.
     """
-    # lazy imports
-    import torchcde
+    if not 0 <= test_size <= 1:
+        raise ValueError("test_size must be between 0 and 1")
+    if test_size + valid_size >= 1:
+        raise ValueError(f"test_size + valid_size must be less than 1. Got test_size={test_size} and "
+                         f"valid_size={valid_size}, so test_size + valid_size = {test_size + valid_size}")
 
-    vardata = _load_data(iso, varname, segment_size, preprocessor)
-    vardata.transpose = True
+    data = pd.read_csv(f"dataloaders/data/{iso.lower()}_eia.csv")[varname]
+    if "SOLAR" in varname:
+        # Some solar data has non-zero values at night
+        solar = data["SOLAR"].values.reshape(-1, 24)
+        night_hours = np.where(solar.mean(axis=0) < 1e-3)[0]
+        solar[:, night_hours] = 0
+        data["SOLAR"] = solar.ravel()
+    data = data.to_numpy()
+    data = torch.Tensor(data.reshape(-1, segment_size, len(varname)))
 
-    if time_features is not None:
-        # hard-coded meta data for more info on the ISO data found in dataloaders/data/meta.py
-        start_dt = meta[iso]['start_dt']
-        end_dt = meta[iso]['end_dt']
-        freq = meta[iso]['freq']
-        date_range = pd.date_range(start_dt, end_dt, freq=freq)
+    idx = np.arange(len(data))
+    np.random.shuffle(idx)
+    i_train_split = int(len(data) * (1 - test_size - valid_size))
+    i_valid_split = int(len(data) * (1 - test_size))
+    train_data = data[idx[:i_train_split]]
+    valid_data = data[idx[i_train_split:i_valid_split]] if valid_size > 0 else None
+    test_data = data[idx[i_valid_split:]] if test_size > 0 else None
 
-        if isinstance(time_features, str):
-            time_features = [time_features]
+    # The hard-coded mean and std are for ERCOT 2022 data. The data in ercot_eia.csv is already scaled
+    # using a StandardScaler by year. These values will invert that scaling and produce 2022 levels.
+    load_transformer = StandardScaler(mean=49073.591773469176, std=10502.989133706267)
+    if "TOTALLOAD" in varname:
+        transformer = InvertibleColumnTransformer(
+            transformers={
+                "TOTALLOAD": load_transformer,
+            },
+            columns=varname
+        )
+        Xt = transformer.fit_transform(train_data)
+    else:
+        Xt = train_data
+        transformer = Passthrough()
 
-        for feat in time_features[::-1]:
-            if feat == 'HOD':
-                feat_data = np.array(date_range.hour)
-            elif feat == 'DOW':
-                feat_data = np.array(date_range.dayofweek)
-            elif feat == 'MOY':
-                feat_data = np.array(date_range.month)
-            else:
-                raise ValueError(f'Invalid time feature {feat}. Please choose from "HOD", "DOW", or "MOY".')
-            vardata.data = np.vstack([feat_data, vardata.data])
+    train_dataloader = torch.utils.data.DataLoader(Xt.to(device), batch_size=batch_size, shuffle=True)
 
-    # TODO: need to interpolate the data to get a continuous-time representation?
-    # data = np.stack([hours, wind], axis=1)
-    # data = np.array(np.split(data, dataset_size))
-    # ys = torch.tensor(data, dtype=torch.float32, device=device)
-    # ts = torch.linspace(0, t_size - 1, t_size, device=device)
-    # data_size = ys.size(-1) - 1  # How many channels the data has (not including time, hence the minus one).
-    # ys_coeffs = torchcde.linear_interpolation_coeffs(ys)  # as per neural CDEs.
-    # dataset = torch.utils.data.TensorDataset(ys_coeffs)
+    if test_data is not None:
+        test_data = transformer.transform(test_data)
+        test_dataloader = torch.utils.data.DataLoader(test_data.to(device), batch_size=batch_size, shuffle=False)
+    else:
+        test_dataloader = None
 
-    dataloader = torch.utils.data.DataLoader(vardata, batch_size=batch_size, shuffle=True, pin_memory=True)
+    if valid_data is not None:
+        valid_data = transformer.transform(valid_data)
+        valid_dataloader = torch.utils.data.DataLoader(valid_data.to(device), batch_size=batch_size, shuffle=False)
+    else:
+        valid_dataloader = None
 
-    return dataloader, preprocessor
+    return train_dataloader, test_dataloader, valid_dataloader, transformer

@@ -5,8 +5,8 @@
 
 import torch
 from torch import nn
-from models import layers
 from models.preprocessing import Preprocessor
+from models.layers import FeaturewiseActivation, activations
 
 
 class Generator(nn.Module, Preprocessor):
@@ -16,7 +16,7 @@ class Generator(nn.Module, Preprocessor):
                  num_layers: int,
                  output_size: int,
                  num_vars: int,
-                 activation: str = 'lipswish',
+                 activation: str = 'relu',
                  output_activation: str = 'sigmoid',
                  **kwargs) -> None:
         """
@@ -47,8 +47,7 @@ class Generator(nn.Module, Preprocessor):
         self.n_channels = num_filters
 
         # Intermediate and final activation functions
-        interm_activation = layers.activations.get(activation.lower())
-        final_activation = layers.activations.get(output_activation.lower())
+        interm_activation = activations.get(activation.lower())
 
         # ConvTranspose1d default parameters
         stride = kwargs.get('stride', 1)
@@ -56,30 +55,40 @@ class Generator(nn.Module, Preprocessor):
         kernel_size = kwargs.get('kernel_size', 3)
 
         # input will be of shape (batch_size, latent_dim)
-        _model = [nn.Linear(self.latent_dim, output_size * num_filters),
-                  interm_activation(),
-                  nn.Unflatten(1, (num_filters, output_size))]  # to expand the input from latent_dim to latent_dim*n_channels
-        for _ in range(num_layers):
-            _model.append(nn.ConvTranspose1d(num_filters, num_filters, kernel_size=kernel_size, stride=stride, padding=padding))
-            _model.append(interm_activation())
-        _model.append(nn.ConvTranspose1d(num_filters, num_vars, kernel_size=kernel_size, stride=stride, padding=padding))
-        _model.append(final_activation())
+        model = [nn.Linear(self.latent_dim, output_size * num_filters),
+                 nn.Unflatten(1, (num_filters, output_size))]  # to expand the input from latent_dim to latent_dim*n_channels
 
-        self.model = nn.Sequential(*_model)
+        for i in range(num_layers):
+            model.append(nn.ConvTranspose1d(num_filters, num_filters, kernel_size=kernel_size, stride=stride, padding=padding))
+            model.append(interm_activation())
+        model.append(nn.ConvTranspose1d(num_filters, num_vars, kernel_size=kernel_size, stride=stride, padding=padding))
+
+        if isinstance(output_activation, str):
+            model.append(activations.get(output_activation.lower())())
+        elif isinstance(output_activation, list):
+            activations_list = torch.nn.ModuleList([activations.get(act.lower())() for act in output_activation])
+            # Need output to be of shape (batch_size, time_steps, num_vars) going into here!
+            model.append(FeaturewiseActivation(activations_list, axis=1))
+
+        self.model = nn.Sequential(*model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # model input x has shape (batch_size, num_vars, )
-        return self.model(x)
+        output = self.model(x)
+        output = output.transpose(1, 2)  # reshape to (batch_size, time_steps, num_vars)
+        return output
 
     def sample_latent(self, num_samples: int = 1) -> torch.Tensor:
-        return torch.randn((num_samples, self.latent_dim))
+        return torch.randn((num_samples, self.latent_dim), device=self.model[0].weight.device)
+
+    def sample(self, num_samples: int = 1) -> torch.Tensor:
+        return self.forward(self.sample_latent(num_samples))
 
 
 class Discriminator(nn.Module):
     def __init__(self,
                  num_filters: int,
                  num_layers: int,
-                 activation: str = 'lipswish',
+                 activation: str = 'relu',
                  output_activation: str = 'sigmoid',
                  **kwargs) -> None:
         """
@@ -107,8 +116,8 @@ class Discriminator(nn.Module):
         stride = kwargs.get('stride', 1)
 
         # Intermediate and final activation functions
-        interm_activation = layers.activations.get(activation.lower())
-        final_activation = layers.activations.get(output_activation.lower())
+        interm_activation = activations.get(activation.lower())
+        final_activation = activations.get(output_activation.lower())
 
         # LazyConv1d as a first layer gives flexibility in the input shape
         _model = [nn.LazyConv1d(num_filters, kernel_size=kernel_size, stride=stride, padding=padding), interm_activation()]

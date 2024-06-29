@@ -2,12 +2,16 @@ import os
 import io
 from PIL import Image
 import imageio
+import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
+
+matplotlib.use('Agg')
 
 
 class TrainingPlotter:
     """ Plots a GIF of the training progress. """
-    def __init__(self, loss_names, varnames: list = None) -> None:
+    def __init__(self, loss_names, varnames: list = None, transformer=None) -> None:
         if varnames is None:
             varnames = ['Samples']
         elif isinstance(varnames, str):
@@ -15,6 +19,8 @@ class TrainingPlotter:
 
         self._samples_names = varnames.copy()
         self._loss_names = loss_names.copy()
+
+        self.transformer = transformer
 
         if len(varnames) == 1:
             varnames = varnames * len(loss_names)
@@ -46,6 +52,8 @@ class TrainingPlotter:
             ax[varname].set_ylabel(varname)
 
         for j, lossname in enumerate(self._loss_names):
+            if lossname not in losses:
+                continue
             ax[lossname].set_title(lossname)
             ax[lossname].plot(losses[lossname])
 
@@ -82,8 +90,8 @@ class TrainingPlotter:
 
 class SDETrainingPlotter(TrainingPlotter):
     """ Plots a GIF of the training progress. """
-    def __init__(self, loss_names, varnames: list = None) -> None:
-        super().__init__(loss_names, varnames)
+    def __init__(self, loss_names, varnames: list = None, transformer=None) -> None:
+        super().__init__(loss_names, varnames, transformer)
 
     def update(self, samples, losses, meta, save_frame=False):
         """
@@ -93,17 +101,22 @@ class SDETrainingPlotter(TrainingPlotter):
         :param meta: a dictionary of metadata for the plot
         :param save_frame: whether to save the still frame
         """
+        samples = self.transformer.inverse_transform(samples).detach().cpu().numpy()
+
         fig, ax = plt.subplot_mosaic(self._mosaic,
                                      gridspec_kw={'width_ratios': meta.get('width_ratios', [2, 1])},
                                      figsize=meta.get('figsize', (12, 5)))
 
         ax[self._samples_names[0]].set_title(f'Samples: Epoch {meta.get("epoch", len(self.frames) + 1)}')
+        t = np.arange(samples.shape[1])
         for i, varname in enumerate(self._samples_names):
             for sample in samples:
-                ax[varname].plot(sample[0], sample[i + 1])  # first row is time
+                ax[varname].plot(t, sample[:, i])  # first row is time
             ax[varname].set_ylabel(varname)
 
         for j, lossname in enumerate(self._loss_names):
+            if lossname not in losses:
+                continue
             ax[lossname].set_title(lossname)
             ax[lossname].plot(losses[lossname])
 

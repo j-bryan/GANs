@@ -1,6 +1,8 @@
+from collections import defaultdict
 from tqdm import trange, tqdm
 import torch
 from torch.autograd import Variable
+from torch.optim.swa_utils import AveragedModel, SWALR
 
 from utils.plotting import TrainingPlotter
 from utils import get_accelerator_device
@@ -18,7 +20,9 @@ class Trainer:
                  d_optimizer: torch.optim.Optimizer,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
-                 device: str | None = None) -> None:
+                 device: str | None = None,
+                 silent: bool = False,
+                 swa: bool = True) -> None:
         """
         Constructor.
 
@@ -39,6 +43,11 @@ class Trainer:
         device : str, optional
             The device to use for training. If None, a GPU is used if available, otherwise
             defaulting to CPU.
+        silent: bool, optional (Default: False)
+            If True, do not print training progress.
+        swa: bool, optional (Default: True)
+            If True, use Stochastic Weight Averaging (SWA) for the generator and discriminator. SWA
+            will start after half of the training epochs have passed.
         """
         self.device = get_accelerator_device() if device is None else device
 
@@ -46,14 +55,22 @@ class Trainer:
         self.D = discriminator.to(device)
         self.G_opt = g_optimizer
         self.D_opt = d_optimizer
-        self.losses = {'G': [], 'D': []}
-        self.num_steps = 0
+        self.losses = {}
         self.critic_iterations = critic_iterations
 
         self._fixed_latent = None
         self.print_every = 0  # by default, don't print or plot anything
         self.plot_every = 0
         self.plotter = plotter
+
+        self.silent = silent
+
+        self._swa = swa
+        if self._swa:
+            self.G_swa = AveragedModel(self.G)
+            self.D_swa = AveragedModel(self.D)
+
+        self._swa_start = torch.inf
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:
         """
@@ -66,7 +83,7 @@ class Trainer:
         """
         # Get generated data
         batch_size = data.size()[0]
-        generated_data = self.sample_generator(batch_size)
+        generated_data, = self.sample_generator(batch_size)
 
         # Calculate probabilities on real and generated data
         data = Variable(data).to(self.device)
@@ -79,8 +96,10 @@ class Trainer:
         d_loss = d_generated.mean() - d_real.mean()
         # Record loss
         d_loss.backward()
-        self.losses['D'].append(d_loss.data.item())
+        # self.losses['D'].append(d_loss.data.item())
         self.D_opt.step()
+
+        return {'D': d_loss.data.item()}
 
     def _generator_train_iteration(self, batch_size: int) -> None:
         """
@@ -94,6 +113,8 @@ class Trainer:
         self.G_opt.zero_grad()
 
         # Get generated data
+        # generated_data = self.sample_generator(batch_size)
+        # generated_data, f_periodicity_diff, g_periodicity_diff = self.sample_generator(batch_size, t_offset=24, return_fg=True)
         generated_data = self.sample_generator(batch_size)
 
         # Calculate loss and optimize
@@ -101,19 +122,15 @@ class Trainer:
         # If the generator is performing well, the discriminator is fooled by the generated data and produces a high value.
         # We want to maximize that, so we flip the sign.
         d_generated = self.D(generated_data)
+        # We want to enforce periodicity (period of 24) in the drift and diffusion functions of G.
         g_loss = -d_generated.mean()
+        # g_loss = -d_generated.mean() + torch.norm(f_periodicity_diff, 2) + torch.norm(g_periodicity_diff, 2)
         g_loss.backward()
         self.G_opt.step()
 
-        # Print model parameters to check if updates for initial value embedding is actually happening
-        # for name, param in self.G._readout.named_parameters():
-        #     if not param.requires_grad:
-        #         continue
-        #     print(name, param.grad.view(-1))
-        #     # print(name, param.data)
-
         # Record loss
-        self.losses['G'].append(g_loss.data.item())
+        # self.losses['G'].append(g_loss.data.item())
+        return {'G': g_loss.data.item()}
 
     def _train_epoch(self, data_loader: torch.utils.data.DataLoader) -> None:
         """
@@ -124,11 +141,39 @@ class Trainer:
         data_loader : torch.utils.data.DataLoader
             The data loader for the training data.
         """
+        n_iter_generator = 0
+        n_iter_critic    = 0
+
+        g_losses = defaultdict(float)
+        d_losses = defaultdict(float)
+
         for i, data in enumerate(data_loader):
-            self.num_steps += 1
-            self._critic_train_iteration(data)
+            n_iter_critic += 1
+            critic_losses    = self._critic_train_iteration(data)
+            for k, v in critic_losses.items():
+                d_losses[k] += v
+
             if i % self.critic_iterations == 0:  # only update generator every critic_iterations iterations
-                self._generator_train_iteration(data.size()[0])
+                n_iter_generator += 1
+                generator_losses = self._generator_train_iteration(data.size()[0])
+                for k, v in generator_losses.items():
+                    g_losses[k] += v
+
+        # Catches issues if something is mis-specified and results in no training of one model or
+        # the other. Also prevents division by zero when calculating the average loss values for the
+        # epoch.
+        if n_iter_generator == 0:
+            raise ValueError("Generator did not have any iterations this epoch!")
+        if n_iter_critic == 0:
+            raise ValueError("Critic did not have any iterations this epoch!")
+
+        epoch_losses = {}
+        for k, v in g_losses.items():
+            epoch_losses[k] = v / n_iter_generator
+        for k, v in d_losses.items():
+            epoch_losses[k] = v / n_iter_critic
+
+        return epoch_losses
 
     def train(self,
               data_loader: torch.utils.data.DataLoader,
@@ -161,30 +206,97 @@ class Trainer:
         save_frame_every = max(1, gif_n_frames // 30)  # save a frame every 30 frames
         save_frame_counter = 0
 
+        losses = defaultdict(list)
+
+        if self._swa:
+            self._swa_start = epochs // 2
+
         if self.plot_every > 0:
             # Fix latents to see how image generation improves during training
             self._fixed_latents = self.G.sample_latent(64).to(self.device)
-            self._plot_training_sample(0)  # initial sample with untrained models
-
-            # Print header using the keys of the losses dictionary
-            header_template = '{:<10}' * (len(self.losses.keys()) + 1)
-            tqdm.write(header_template.format('Epoch', *list(self.losses.keys())))
+            self._plot_training_sample(0, losses)  # initial sample with untrained models
 
             # template for printing losses during the training process
-            print_template = '{:<10}' + '{:<10.4f}' * len(self.losses.keys())
 
-        for epoch in trange(epochs):  # tqdm gives us a nice progress bar
-            self._train_epoch(data_loader)
-            if self.print_every > 0 and (epoch + 1) % self.print_every == 0:
-                tqdm.write(print_template.format(epoch + 1, *[loss[-1] for loss in self.losses.values()]))
+        for epoch in trange(epochs, disable=self.silent):  # tqdm gives us a nice progress bar
+            epoch_losses = self._train_epoch(data_loader)
+            for k, v in epoch_losses.items():
+                losses[k].append(v)
+
+            if epoch == 0 and not self.silent:
+                # Print header using the keys of the losses dictionary
+                header_template = '{:<10}' * (len(losses.keys()) + 1)
+                print_template = '{:<10}' + '{:<10.4f}' * len(losses.keys())
+                loss_keys = list(losses.keys())
+                tqdm.write(header_template.format('Epoch', *loss_keys))
+
+            if self._swa and epoch >= self._swa_start:
+                self.G_swa.update_parameters(self.G)
+                self.D_swa.update_parameters(self.D)
+
+            if self.print_every > 0 and (epoch + 1) % self.print_every == 0 and not self.silent:
+                tqdm.write(print_template.format(epoch + 1, *[losses[k][-1] for k in loss_keys]))
 
             # Save progress
             if self.plot_every > 0 and (epoch + 1) % self.plot_every == 0:
                 save_frame_counter += 1
                 save_frame = save_frame_counter % save_frame_every == 0
-                self._plot_training_sample(epoch + 1, save_frame=save_frame)
+                self._plot_training_sample(epoch + 1, losses, save_frame=save_frame)
 
-    def _plot_training_sample(self, epoch: int, save_frame: bool = False) -> None:
+        self.losses = losses
+
+    def evaluate(self, data_loader: torch.utils.data.DataLoader) -> dict:
+        """
+        Evaluate the model on a data loader.
+
+        Parameters
+        ----------
+        data_loader : torch.utils.data.DataLoader
+            The data loader for the evaluation data.
+
+        Returns
+        -------
+        losses : dict
+            The losses on the evaluation data.
+        """
+        self.G.eval()
+        self.D.eval()
+
+        losses = defaultdict(float)
+        n_batches = 0
+        for data in data_loader:
+            batch_size = data.size()[0]
+            latent = self.G.sample_latent(batch_size).to(self.device)
+            generated_data, = self.G(latent)
+
+            data = Variable(data).to(self.device)
+            d_real = self.D(data)
+            d_generated = self.D(generated_data)
+
+            d_loss = d_generated.mean() - d_real.mean()
+            g_loss = -d_generated.mean()
+
+            losses['G'] += g_loss.data.item()
+            losses['D'] += d_loss.data.item()
+
+            if self._swa:
+                generated_data_swa, = self.G_swa(latent)
+                d_real_swa = self.D_swa(data)
+                d_generated_swa = self.D_swa(generated_data_swa)
+                d_loss_swa = d_generated_swa.mean() - d_real_swa.mean()
+                g_loss_swa = -d_generated_swa.mean()
+
+                losses['G_swa'] += g_loss_swa.data.item()
+                losses['D_swa'] += d_loss_swa.data.item()
+
+            n_batches += 1
+
+        for k, v in losses.items():
+            losses[k] /= n_batches
+
+        return losses
+
+    def _plot_training_sample(self, epoch: int, losses: dict, save_frame: bool = False) -> None:
         """
         Plot a sample of the training data.
 
@@ -193,8 +305,8 @@ class Trainer:
         epoch : int
             The current epoch.
         """
-        train_sample = self.G.transformed_sample(self._fixed_latents)
-        self.plotter.update(train_sample, self.losses, {'epoch': epoch}, save_frame=save_frame)
+        train_sample = self.G(self._fixed_latents)
+        self.plotter.update(train_sample, losses, {'epoch': epoch}, save_frame=save_frame)
 
     def sample_generator(self, num_samples: int) -> torch.Tensor:
         """
@@ -210,9 +322,7 @@ class Trainer:
         generated_data : torch.Tensor
             The generated data.
         """
-        latent_samples = Variable(self.G.sample_latent(num_samples)).to(self.device)
-        generated_data = self.G(latent_samples)
-        return generated_data
+        return self.G.sample(num_samples)
 
     def save_training_gif(self, filename: str, duration: int = 5) -> None:
         """

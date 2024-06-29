@@ -15,7 +15,9 @@ class WGANGPTrainer(Trainer):
                  penalty_weight: float = 10,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
-                 device: str | None = None) -> None:
+                 device: str | None = None,
+                 silent: bool = False,
+                 swa: bool = True) -> None:
         """
         Constructor.
 
@@ -39,9 +41,9 @@ class WGANGPTrainer(Trainer):
             The device to use for training. If None, a GPU is used if available, otherwise
             defaulting to CPU.
         """
-        super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter)
+        super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter, device, swa)
         self.penalty_weight = penalty_weight
-        self.losses |= {'GP': [], 'gradient_norm': []}  # add gradient penalty terms to losses dict
+        self.silent = silent
 
     def _critic_train_iteration(self, data: torch.Tensor) -> None:
         """
@@ -62,8 +64,8 @@ class WGANGPTrainer(Trainer):
         d_generated = self.D(generated_data)
 
         # Get gradient penalty
-        gradient_penalty = self._gradient_penalty(data, generated_data)
-        self.losses['GP'].append(gradient_penalty.data.item())
+        gradient_penalty, grad_norm_losses = self._gradient_penalty(data, generated_data)
+        # self.losses['GP'].append(gradient_penalty.data.item())
 
         # Create total loss and optimize
         self.D_opt.zero_grad()
@@ -71,8 +73,13 @@ class WGANGPTrainer(Trainer):
         d_loss = d_generated.mean() - d_real.mean() + gradient_penalty
         # Record loss
         d_loss.backward()
-        self.losses['D'].append(d_loss.data.item())
+        # self.losses['D'].append(d_loss.data.item())
         self.D_opt.step()
+
+        losses = {'D': d_loss.data.item(), 'GP': gradient_penalty.data.item()}
+        losses.update(grad_norm_losses)
+
+        return losses
 
     def _gradient_penalty(self, real_data: torch.Tensor, generated_data: torch.Tensor) -> torch.Tensor:
         """
@@ -115,8 +122,8 @@ class WGANGPTrainer(Trainer):
         # the square root, so manually calculate norm and add epsilon
         gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12)
         # self.losses['gradient_norm'].append(gradients.norm(2, dim=1).mean().data)
-        self.losses['gradient_norm'].append(gradients_norm.mean().data)
+        # self.losses['gradient_norm'].append(gradients_norm.mean().data)
 
         # Return gradient penalty
         penalty = self.penalty_weight * ((gradients_norm - 1) ** 2).mean()
-        return penalty
+        return penalty, {'gradient_norm': gradients_norm.mean().data}

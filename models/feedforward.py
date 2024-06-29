@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from models.layers import MLP
+from models.layers import FFNN
 from models.preprocessing import Preprocessor
 
 
@@ -30,7 +30,7 @@ class Generator(torch.nn.Module, Preprocessor):
         super().__init__()
         Preprocessor.__init__(self)
         self.latent_dim = input_size
-        mlp = MLP(input_size,
+        mlp = FFNN(input_size,
                   output_size * num_vars,  # ensures the tensor can be reshaped into (num_vars, output_size)
                   hidden_size,
                   num_layers,
@@ -69,7 +69,7 @@ class Discriminator(torch.nn.Module):
         super().__init__()
 
         flatten = torch.nn.Flatten()  # dimension agnostic, will work for any number of variables
-        mlp = MLP(input_size * num_vars,
+        mlp = FFNN(input_size * num_vars,
                   1,
                   hidden_size,
                   num_layers,
