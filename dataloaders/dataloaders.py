@@ -138,7 +138,7 @@ def get_sde_dataloader(iso: str,
         raise ValueError(f"test_size + valid_size must be less than 1. Got test_size={test_size} and "
                          f"valid_size={valid_size}, so test_size + valid_size = {test_size + valid_size}")
 
-    data = pd.read_csv(f"dataloaders/data/{iso.lower()}.csv")[varname]
+    data = pd.read_csv(f"dataloaders/data/{iso.lower()}_eia.csv")[varname]
     if "SOLAR" in varname:
         # Some solar data has non-zero values at night
         solar = data["SOLAR"].values.reshape(-1, 24)
@@ -156,7 +156,9 @@ def get_sde_dataloader(iso: str,
     valid_data = data[idx[i_train_split:i_valid_split]] if valid_size > 0 else None
     test_data = data[idx[i_valid_split:]] if test_size > 0 else None
 
-    load_transformer = StandardScaler()
+    # The hard-coded mean and std are for ERCOT 2022 data. The data in ercot_eia.csv is already scaled
+    # using a StandardScaler by year. These values will invert that scaling and produce 2022 levels.
+    load_transformer = StandardScaler(mean=49073.591773469176, std=10502.989133706267)
     if "TOTALLOAD" in varname:
         transformer = InvertibleColumnTransformer(
             transformers={
