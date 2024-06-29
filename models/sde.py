@@ -29,6 +29,9 @@ class SdeGeneratorConfig:
     noise_type: str = "diagonal"
     time_size: int = 1
     time_steps: int = 24
+    time_dependent_readout: bool = False
+    time_dependent_drift: bool = False
+    time_dependent_diffusion: bool = False
 
     def to_dict(self):
         d = {}
@@ -48,7 +51,9 @@ class GeneratorFunc(torch.nn.Module):
                  noise_size: int,
                  hidden_size: int,
                  drift_config: FFNNConfig,
-                 diffusion_config: FFNNConfig) -> None:
+                 diffusion_config: FFNNConfig,
+                 time_dependent_drift: bool,
+                 time_dependent_diffusion: bool) -> None:
         """
         Constructor for the SDE
 
@@ -66,6 +71,9 @@ class GeneratorFunc(torch.nn.Module):
         # General drift and diffusion functions modeled with MLPs.
         self._drift = FFNN(**drift_config.to_dict())
         self._diffusion = FFNN(**diffusion_config.to_dict())
+
+        self.time_dependent_drift = time_dependent_drift
+        self.time_dependent_diffusion = time_dependent_diffusion
 
     def f_and_g(self,
                 t: torch.Tensor,
@@ -91,8 +99,10 @@ class GeneratorFunc(torch.nn.Module):
         t = t.expand(x.size(0), 1)
         tx = torch.cat([t, x], dim=1)
 
-        f = self._drift(tx)
-        g = self._diffusion(tx)
+        f = self._drift(tx) if self.time_dependent_drift else self._drift(x)
+        g = self._diffusion(tx) if self.time_dependent_diffusion else self._diffusion(x)
+        # f = self._drift(tx)
+        # g = self._diffusion(tx)
         # reshape to match needed matrix dimensions
         if self.noise_type == "general":
             g = g.view(x.size(0), self._hidden_size, self._noise_size)
@@ -125,18 +135,22 @@ class Generator(torch.nn.Module):
         self._func = GeneratorFunc(config.noise_size,
                                    config.hidden_size,
                                    config.drift_config,
-                                   config.diffusion_config)
+                                   config.diffusion_config,
+                                   config.time_dependent_drift,
+                                   config.time_dependent_diffusion)
         self._func.sde_type = config.sde_type
         self._func.noise_type = config.noise_type
         # MLP to map the state of the SDE to the space of the data.
         # self._readout = torch.nn.Linear(hidden_size, data_size)
         self._readout = FFNN(**config.readout_config.to_dict())
         # self._readout = torch.nn.Linear(config.readout_config.in_size, config.readout_config.out_size)
+        self._time_dependent_readout = config.time_dependent_readout
 
     def forward(self,
                 init_noise: torch.Tensor,
                 ts: torch.Tensor = None,
-                gradients: bool = False) -> torch.Tensor:
+                gradients: bool = False,
+                hidden: bool = False) -> torch.Tensor:
         """
         Forward pass of the SDE.
 
@@ -146,6 +160,10 @@ class Generator(torch.nn.Module):
             The initial noise used to initialize the SDE.
         ts : torch.Tensor (optional)
             The times at which to evaluate the SDE. Has shape (t_size,).
+        gradients : bool
+            Whether to calculate gradients in the observed space of Y_t.
+        hidden : bool
+            Whether to return the hidden states of the SDE.
 
         Returns
         -------
@@ -156,6 +174,8 @@ class Generator(torch.nn.Module):
         if ts is None and self._time_steps is None:
             raise ValueError('Either pass in ts or set time_steps in the constructor!')
         elif ts is None:
+            # Randomly vary the number of days to evaluate the SDE at
+            # ts = torch.arange(torch.randint(low=1, high=3, size=(1,)).item() * self._time_steps, device=init_noise.device)
             ts = torch.arange(self._time_steps, device=init_noise.device)
 
         ###################
@@ -173,13 +193,14 @@ class Generator(torch.nn.Module):
         # xs is returned as (time, batch_size, hidden_size)
         # Transpose to get (batch_size, time, hidden_size)
         xs = xs.transpose(0, 1)
+        # Keep only the last self._time_steps time steps of xs
+        # xs = xs[:, -self._time_steps:, :]
         # concatenate time to last dimension of xs
-        # Let's try adding a nighttime hours feature. We'll define nighttime hours as 8pm to 6am.
-        # nighttime = ((ts.squeeze() % 24) > 20) | ((ts.squeeze() % 24) < 6)
-        # nighttime = nighttime.unsqueeze(-1).float()
-        # xs = torch.cat([ts, nighttime, xs], dim=2)
-        t_state = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
-        tx = torch.cat([t_state, xs], dim=2)
+        if self._time_dependent_readout:
+            t_state = ts.unsqueeze(0).unsqueeze(-1).expand(batch_size, ts.size(0), 1)
+            tx = torch.cat([t_state, xs], dim=2)
+        else:
+            tx = xs
         # Apply readout to batches of hidden states one time step at a time
         ys = self._readout(tx)
 
@@ -217,6 +238,9 @@ class Generator(torch.nn.Module):
 
         if gradients:
             return ys, drift, diffusion
+
+        if hidden:
+            return ys, xs
 
         return ys
 

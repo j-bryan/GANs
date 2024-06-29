@@ -6,6 +6,7 @@ import fire
 import numpy as np
 import torch
 from torch.optim import Adam
+from scipy.stats import wasserstein_distance
 
 from models.conv import Generator, Discriminator
 from training import WGANGPTrainer
@@ -32,10 +33,11 @@ class AdamConfig:
         return {prefix + "_" + k: v for k, v in self.__dict__.items()}
 
 
-def tune_cnn_gan(n_trials: int = 100,
+def tune_cnn_gan(n_trials: int = 128,
                  epochs: int = 2000,
-                 batch_size: int = 256,
-                 device: str = "cpu",
+                 batch_size: int = 512,
+                 noise_size: int = 24,
+                 device: str = "cuda",
                  silent: bool = False) -> None:
     """
     Sets up and trains an SDE-GAN.
@@ -52,18 +54,22 @@ def tune_cnn_gan(n_trials: int = 100,
         The number of epochs to train for.
     """
     segment_size = 24
-    dataloader, test_dataloader, _, transformer = get_sde_dataloader(
+    dataloader, _, _, transformer = get_sde_dataloader(
         iso="ERCOT",
         varname=["TOTALLOAD", "WIND", "SOLAR"],
         segment_size=segment_size,
         batch_size=batch_size,
         device=device,
-        test_size=0.2,
-        valid_size=0.1,
+        test_size=0.0,
+        valid_size=0.0,
     )
     critic_iterations = max(1, min(10, len(dataloader)))
 
-    def objective(trial: optuna.Trial):
+    def objective(trial: optuna.Trial, dirname: str | None = None):
+        gen_num_filters = trial.suggest_categorical("gen_num_filters", [8, 16, 32, 64, 128])
+        gen_num_layers = trial.suggest_int("gen_num_layers", 2, 4)
+        dis_num_filters = trial.suggest_categorical("dis_num_filters", [8, 16, 32, 64, 128])
+        dis_num_layers = trial.suggest_int("dis_num_layers", 2, 4)
         params = {
             "ISO":                "ERCOT",
             "variables":          ["TOTALLOAD", "WIND", "SOLAR"],
@@ -75,12 +81,12 @@ def tune_cnn_gan(n_trials: int = 100,
             "random_seed":        12345,
             "batch_size":         batch_size,
             # Generator parameters
-            "init_noise_size":    100,  # tune?
-            "gen_num_filters":    trial.suggest_int("gen_num_filters", 8, 512),
-            "gen_num_layers":     trial.suggest_int("gen_num_layers", 2, 4),
+            "init_noise_size":    noise_size,  # tune?
+            "gen_num_filters":    gen_num_filters,
+            "gen_num_layers":     gen_num_layers,
             # Discriminator parameters
-            "dis_num_filters":    trial.suggest_int("dis_num_filters", 8, 512),
-            "dis_num_layers":     trial.suggest_int("dis_num_layers", 2, 4),
+            "dis_num_filters":    dis_num_filters,
+            "dis_num_layers":     dis_num_layers,
         }
 
         readout_activations = {
@@ -119,8 +125,17 @@ def tune_cnn_gan(n_trials: int = 100,
         D(D_init_input)
 
         # We'll use component-specific learning rates
-        optimizer_G = Adam(G.parameters(), lr=1e-3, betas=(0.0, 0.99))
-        optimizer_D = Adam(D.parameters(), lr=1e-3, betas=(0.0, 0.99))
+        lr = trial.suggest_categorical("lr", [1e-3, 1e-4, 1e-5])
+        beta1 = trial.suggest_categorical("beta1", [0.0, 0.5, 0.9])
+        if beta1 == 0.0:
+            beta2 = 0.99
+        elif beta1 == 0.5:
+            beta2 = 0.9
+        else:
+            beta2 = 0.999
+        betas = (beta1, beta2)
+        optimizer_G = Adam(G.parameters(), lr=lr, betas=betas)
+        optimizer_D = Adam(D.parameters(), lr=lr, betas=betas)
 
         plotter = SDETrainingPlotter(['G', 'D'], varnames=params['variables'], transformer=transformer)
         trainer = WGANGPTrainer(G, D, optimizer_G, optimizer_D,
@@ -138,56 +153,80 @@ def tune_cnn_gan(n_trials: int = 100,
         # Create a unique identifier string so we can save all models and plots with reasonable file
         # names. They don't need to be human readable as long as we save the params dictionary with
         # the model results so we can find the model directory given a set of tunable parameters.
-        dirname = f'saved_models/cnn_gnf{params["gen_num_filters"]}_gnl{params["gen_num_layers"]}_dnf{params["dis_num_filters"]}_dnl{params["dis_num_layers"]}/'
-        if not os.path.exists(dirname):
-            os.makedirs(dirname)
+        dirname = dirname or f'saved_models/cnn_retune/cnn_gnf{params["gen_num_filters"]}_gnl{params["gen_num_layers"]}_dnf{params["dis_num_filters"]}_dnl{params["dis_num_layers"]}_ns{noise_size}/'
+        os.makedirs(dirname, exist_ok=True)
 
         # Save training visualizations
         iso = params['ISO']
         varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
-        trainer.save_training_gif(dirname + f'training_sde_{iso}_{varnames_abbrev}.gif')
+        trainer.save_training_gif(os.path.join(dirname, f'training_sde_{iso}_{varnames_abbrev}.gif'))
 
         # Save models
-        torch.save(G.state_dict(), dirname + f'sde_gen_{iso}_{varnames_abbrev}.pt')
-        torch.save(D.state_dict(), dirname + f'sde_dis_{iso}_{varnames_abbrev}.pt')
+        torch.save(G.state_dict(), os.path.join(dirname, f'sde_gen_{iso}_{varnames_abbrev}.pt'))
+        torch.save(D.state_dict(), os.path.join(dirname, f'sde_dis_{iso}_{varnames_abbrev}.pt'))
 
         if trainer._swa:
-            torch.save(trainer.G_swa.state_dict(), dirname + f'sde_gen_swa_{iso}_{varnames_abbrev}.pt')
-            torch.save(trainer.D_swa.state_dict(), dirname + f'sde_dis_swa_{iso}_{varnames_abbrev}.pt')
+            torch.save(trainer.G_swa.state_dict(), os.path.join(dirname, f'sde_gen_swa_{iso}_{varnames_abbrev}.pt'))
+            torch.save(trainer.D_swa.state_dict(), os.path.join(dirname, f'sde_dis_swa_{iso}_{varnames_abbrev}.pt'))
 
         # Save parameters
         params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         # reuse the params_file name if it was specified, otherwise use the default naming scheme
-        filename = dirname + f'params_sde_{iso}_{varnames_abbrev}.json'
+        filename = os.path.join(dirname, f'params_sde_{iso}_{varnames_abbrev}.json')
         with open(filename, 'w') as f:
             json.dump(params, f)
 
-        plot_model_results(G, transformer, params["variables"],
-                        G_swa=trainer.G_swa if trainer._swa else None,
-                        dirname=dirname)
+        plot_model_results(G=G,
+                           transformer=transformer,
+                           model_type="CNN",
+                           included_models="CNN",
+                           varnames=params["variables"],
+                           G_swa=trainer.G_swa if trainer._swa else None,
+                           dirname=dirname)
 
-        # Evaluate the model on the test set
-        # We do this in a somewhat ad-hoc way by calculating Wasserstein distances of every metric
-        # we can conceivably care about, scaled by the support of the distribution of that metric.
-        # We calculate metrics for samples, first differences, autocorrelation, and cross-correlation
-        # of every variable in the dataset.
-        # G_swa = trainer.G_swa if trainer._swa else None
-        # metrics = calculate_metrics(G, test_dataloader, transformer, params["variables"], G_swa)
-        # Among the metrics returned here is the "total" metric, which is a sum of all of the weighted
-        # Wasserstein distances of the other metrics. This is the metric we'll use to evaluate the model.
+        # Calculate the wasserstein distance between the real and generated data.
+        wd = []
+        real_data = transformer.inverse_transform(dataloader.dataset).detach().cpu().numpy()
+        synth_data = G.sample(real_data.shape[0])
+        synth_data = transformer.inverse_transform(synth_data).detach().cpu().numpy()
+        for i in range(data_size):
+            wd.append(wasserstein_distance(real_data[..., i].flatten(), synth_data[..., i].flatten()))
 
-        return trainer.losses[-1]
+        return wd
 
-    # storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage("cnn_gan.log"))
-    # study = optuna.create_study(direction="minimize", study_name="cnn_gan_init", storage=storage, load_if_exists=True)
+    storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage("cnn_gan_retune.log"))
+    # study = optuna.create_study(directions=["minimize", "minimize", "minimize"], study_name=f"cnn_{noise_size}", storage=storage)
     # study.optimize(objective, n_trials=n_trials)
-    fixed = optuna.trial.FixedTrial({
-        "gen_num_filters": 128,
-        "gen_num_layers": 3,
-        "dis_num_filters": 128,
-        "dis_num_layers": 3
-    })
-    objective(fixed)
+
+    study = optuna.load_study(study_name=f"cnn_{noise_size}", storage=storage)
+
+    # Search the trials for the best for each objective
+    best_totalload = None
+    best_wind = None
+    best_solar = None
+
+    for trial in study.trials:
+        values = trial.values
+        if best_totalload is None or values[0] < best_totalload.values[0]:
+            best_totalload = trial
+        if best_wind is None or values[1] < best_wind.values[1]:
+            best_wind = trial
+        if best_solar is None or values[2] < best_solar.values[2]:
+            best_solar = trial
+
+    # fixed = optuna.trial.FixedTrial(best_totalload.params)
+    # objective(fixed, dirname="saved_models/cnn_final/best_totalload")
+
+    params = best_wind.params
+    params["lr"] = 1e-4
+    fixed = optuna.trial.FixedTrial(best_wind.params)
+    objective(fixed, dirname="saved_models/cnn_final/best_wind_lr1e-4")
+    params["lr"] = 1e-5
+    fixed = optuna.trial.FixedTrial(best_wind.params)
+    objective(fixed, dirname="saved_models/cnn_final/best_wind_lr1e-5")
+
+    # fixed = optuna.trial.FixedTrial(best_solar.params)
+    # objective(fixed, dirname="saved_models/cnn_final/best_solar")
 
 
 if __name__ == '__main__':

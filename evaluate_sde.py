@@ -43,8 +43,6 @@ def plot_samples(data, columns, n_samples=6, dirname="plots/sde"):
                 hist_min = np.min(historical_sample)
                 hist_max = np.max(historical_sample)
 
-                print("Num values in data", len(data))
-                print("Num colors in list", len(COLORS))
                 for icolor, (k, v) in enumerate(data.items()):
                     if k == "Historical":
                         continue
@@ -85,30 +83,30 @@ def plot_histograms(data, columns, is_diff=False, dirname="plots/sde"):
         plt.savefig(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}.png"), dpi=300)
         plt.close()
 
-        import plotly.figure_factory as ff
+        # import plotly.figure_factory as ff
 
-        # Group data together
-        hist_data = []
-        group_labels = []
-        min_val = None
-        max_val = None
-        key_order = ["Historical", "ARMA", "CNN", "DGAN", "SDE"]
-        for k in key_order:
-            if k not in data:
-                continue
-            v = data[k]
-            j = columns.index(var)
-            vals = v[..., j].flatten()
-            hist_data.append(vals)
-            group_labels.append(k)
-            min_val = min(vals) if min_val is None else min(min_val, min(vals))
-            max_val = max(vals) if max_val is None else max(max_val, max(vals))
-        bin_size = (max_val - min_val) / 25
+        # # Group data together
+        # hist_data = []
+        # group_labels = []
+        # min_val = None
+        # max_val = None
+        # key_order = ["Historical", "ARMA", "CNN", "DGAN", "SDE"]
+        # for k in key_order:
+        #     if k not in data:
+        #         continue
+        #     v = data[k]
+        #     j = columns.index(var)
+        #     vals = v[..., j].flatten()
+        #     hist_data.append(vals)
+        #     group_labels.append(k)
+        #     min_val = min(vals) if min_val is None else min(min_val, min(vals))
+        #     max_val = max(vals) if max_val is None else max(max_val, max(vals))
+        # bin_size = (max_val - min_val) / 25
 
-        # Create distplot with custom bin_size
-        # fig = ff.create_distplot(hist_data, group_labels, bin_size=bin_size, show_hist=False)
-        fig = ff.create_distplot(hist_data, group_labels, show_hist=False)
-        fig.write_image(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}_plotly.png"))
+        # # Create distplot with custom bin_size
+        # # fig = ff.create_distplot(hist_data, group_labels, bin_size=bin_size, show_hist=False)
+        # fig = ff.create_distplot(hist_data, group_labels, show_hist=False)
+        # fig.write_image(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}_plotly.png"))
 
 
 def plot_acf(data, columns, dirname="plots/sde"):
@@ -224,6 +222,8 @@ def plot_gradients(model: Generator, init_noise, varnames: list[str], transforme
 def plot_model_results(
     G: Generator | None = None,
     transformer=None,
+    model_type: str = "SDE",
+    included_models: str | list[str] = "all",
     varnames: list[str] = ["TOTALLOAD", "WIND", "SOLAR"],
     dirname: str = "",
     G_swa: Generator | None = None,
@@ -234,33 +234,45 @@ def plot_model_results(
     if G_swa is not None:
         G_swa = G_swa.to(device)
 
-    if G is not None:
-        G = G.to(device)
-        init_noise = G.sample_latent(n_samples)
-        samples = G(init_noise)
-        sde_samples = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=varnames)
-        sde_samples.to_csv(f"ercot_samples_sde.csv", index=False)
-
-    data_locations = {
+    all_data_locations = {
         "Historical": ("dataloaders/data/ercot.csv", dict(index_col=0)),
         "ARMA": ("ercot_samples_arma.csv", dict()),
         "CNN": ("ercot_samples_cnn.csv", dict()),
         "DGAN": ("ercot_samples_dgan.csv", dict()),
         "SDE": ("ercot_samples_sde.csv", dict())
     }
+    if included_models != "all":
+        if isinstance(included_models, str):
+            # include only the specified model and the historical data
+            data_locations = {"Historical": all_data_locations["Historical"], included_models: all_data_locations[included_models]}
+        else:
+            # list of models to include
+            data_locations = {"Historical": all_data_locations["Historical"]}
+            for model in included_models:
+                data_locations[model] = all_data_locations[model]
+    else:
+        data_locations = all_data_locations
 
     data = {}
     for k, (fpath, kwargs) in data_locations.items():
         if os.path.exists(fpath):
             data[k] = pd.read_csv(fpath, **kwargs)
+        else:
+            print(f"File {fpath} does not exist")
 
     if G is not None:
-        data["SDE"] = sde_samples
+        G = G.to(device)
+        init_noise = G.sample_latent(n_samples)
+        samples = G(init_noise)
+        model_samples = pd.DataFrame(np.vstack(transformer.inverse_transform(samples).detach().cpu().numpy()), columns=varnames)
+        model_samples.to_csv(os.path.join(dirname, f"ercot_samples_{model_type.lower()}.csv"), index=False)
+        data[model_type.upper()] = model_samples
+
     if G_swa is not None:
         samples_swa = G_swa(init_noise)
         sde_samples_swa = pd.DataFrame(np.vstack(transformer.inverse_transform(samples_swa).detach().cpu().numpy()), columns=varnames)
-        sde_samples_swa.to_csv(f"ercot_samples_sde_swa.csv", index=False)
-        data["SDE_SWA"] = sde_samples_swa
+        sde_samples_swa.to_csv(os.path.join(dirname, f"ercot_samples_{model_type.lower()}_swa.csv"), index=False)
+        data[f"{model_type.upper()}_SWA"] = sde_samples_swa
 
     if "Historical" in data:
         data["Historical"].pop("PRICE")
@@ -270,9 +282,6 @@ def plot_model_results(
         np.random.shuffle(data["Historical"])
 
     os.makedirs(dirname, exist_ok=True)
-    if G_swa is not None:
-        swa_dirname = os.path.join(dirname, "swa/")
-        os.makedirs(swa_dirname, exist_ok=True)
 
     # Plot the samples, with each variable in a separate plot
     plot_samples(data, varnames, dirname=dirname)

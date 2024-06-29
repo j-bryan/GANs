@@ -78,7 +78,7 @@ class Generator(nn.Module, Preprocessor):
         return output
 
     def sample_latent(self, num_samples: int = 1) -> torch.Tensor:
-        return torch.randn((num_samples, self.latent_dim))
+        return torch.randn((num_samples, self.latent_dim), device=self.model[0].weight.device)
 
     def sample(self, num_samples: int = 1) -> torch.Tensor:
         return self.forward(self.sample_latent(num_samples))
