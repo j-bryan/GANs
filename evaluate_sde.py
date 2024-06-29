@@ -18,7 +18,6 @@ from dataloaders import get_sde_dataloader
 from statsmodels.tsa.stattools import acf, ccf
 
 
-# COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
 
 
@@ -50,10 +49,6 @@ def plot_samples(data, columns, n_samples=6, dirname="plots/sde"):
                     sample_idx = np.argmin([np.abs(np.min(v[j, :, i]) - hist_min) + np.abs(np.max(v[j, :, i]) - hist_max) for j in range(v.shape[0])])
                     ax[irow, icol].plot(v[sample_idx, :, i], color=COLORS[icolor], linewidth=0.5, label=k)
 
-        # for icolor, (k, v) in enumerate(data.items()):
-        #     j = columns.index(var)
-        #     plt.plot(v[:n_samples, :, j].T, color=COLORS[icolor], linewidth=0.5, label=k)
-
         plt.ylabel(var)
         plt.xlabel("Hour of Day")
         plt.legend()
@@ -83,39 +78,23 @@ def plot_histograms(data, columns, is_diff=False, dirname="plots/sde"):
         plt.savefig(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}.png"), dpi=300)
         plt.close()
 
-        # import plotly.figure_factory as ff
-
-        # # Group data together
-        # hist_data = []
-        # group_labels = []
-        # min_val = None
-        # max_val = None
-        # key_order = ["Historical", "ARMA", "CNN", "DGAN", "SDE"]
-        # for k in key_order:
-        #     if k not in data:
-        #         continue
-        #     v = data[k]
-        #     j = columns.index(var)
-        #     vals = v[..., j].flatten()
-        #     hist_data.append(vals)
-        #     group_labels.append(k)
-        #     min_val = min(vals) if min_val is None else min(min_val, min(vals))
-        #     max_val = max(vals) if max_val is None else max(max_val, max(vals))
-        # bin_size = (max_val - min_val) / 25
-
-        # # Create distplot with custom bin_size
-        # # fig = ff.create_distplot(hist_data, group_labels, bin_size=bin_size, show_hist=False)
-        # fig = ff.create_distplot(hist_data, group_labels, show_hist=False)
-        # fig.write_image(os.path.join(dirname, f"histogram_{'diff_' if is_diff else ''}{var}_plotly.png"))
-
 
 def plot_acf(data, columns, dirname="plots/sde"):
+    nlags = 12
+    lags = np.arange(nlags + 1)
     for i, var in enumerate(columns):
         plt.figure()
         for k, v in data.items():
-            samples_acf = np.array([acf(v[j, :, i], nlags=12, fft=False) for j in range(v.shape[0])])
-            plt.plot(np.arange(13), samples_acf.mean(axis=0), label=k)
-            plt.fill_between(np.arange(13), np.percentile(samples_acf, 2.5, axis=0), np.percentile(samples_acf, 97.5, axis=0), alpha=0.5)
+            samples_acf = np.array([acf(v[j, :, i], nlags=nlags, fft=False) for j in range(v.shape[0])])
+            # Drop any rows with NaNs
+            samples_acf_filt = samples_acf[~np.isnan(samples_acf).any(axis=1)]
+            if samples_acf_filt.shape[0] == 0:
+                print("All samples have NaNs! Cannot calculate ACF.")
+                continue
+            acf_mean = samples_acf_filt.mean(axis=0)
+            acf_025, acf_975 = np.percentile(samples_acf_filt, [2.5, 97.5], axis=0)
+            plt.plot(lags, acf_mean, label=k)
+            plt.fill_between(lags, acf_025, acf_975, alpha=0.5)
         plt.xlabel("Lag")
         plt.ylabel("Autocorrelation")
         plt.legend()
@@ -123,17 +102,25 @@ def plot_acf(data, columns, dirname="plots/sde"):
 
 
 def plot_xcf(data, columns, dirname="plots/sde"):
+    nlags = 13
+    lags = np.arange(-nlags + 1, nlags)
     for idx_var1, var in enumerate(columns):
         for idx_var2, var2 in enumerate(columns):
             if idx_var1 <= idx_var2:  # No auto-correlation, no repeated pairs
                 continue
             plt.figure()
             for k, v in data.items():
-                backwards = np.array([ccf(v[i, :, idx_var1][::-1], v[i, :, idx_var2][::-1], nlags=13, fft=False)[::-1] for i in range(v.shape[0])])
-                forwards  = np.array([ccf(v[i, :, idx_var1],       v[i, :, idx_var2],       nlags=13, fft=False)       for i in range(v.shape[0])])
+                backwards = np.array([ccf(v[i, :, idx_var1][::-1], v[i, :, idx_var2][::-1], nlags=nlags, fft=False)[::-1] for i in range(v.shape[0])])
+                forwards  = np.array([ccf(v[i, :, idx_var1],       v[i, :, idx_var2],       nlags=nlags, fft=False)       for i in range(v.shape[0])])
                 xcf = np.concatenate([backwards[:, :-1], forwards], axis=1)
-                plt.plot(np.arange(-12, 13), xcf.mean(axis=0), label=k)
-                plt.fill_between(np.arange(-12, 13), np.percentile(xcf, 2.5, axis=0), np.percentile(xcf, 97.5, axis=0), alpha=0.5)
+                xcf = xcf[~np.isnan(xcf).any(axis=1)]
+                if xcf.shape[0] == 0:
+                    print("All samples have NaNs! Cannot calculate XCF.")
+                    continue
+                xcf_mean = xcf.mean(axis=0)
+                xcf_025, xcf_975 = np.percentile(xcf, [2.5, 97.5], axis=0)
+                plt.plot(lags, xcf_mean, label=k)
+                plt.fill_between(lags, xcf_025, xcf_975, alpha=0.5)
             plt.xlabel("Lag")
             plt.ylabel("Cross-Correlation")
             plt.title(f"{var} vs {var2}")

@@ -38,7 +38,7 @@ class AdamConfig:
 
 def tune_sdegan(n_trials: int = 64,
                 epochs: int = 10000,
-                batch_size: int = 1826,
+                batch_size: int = 512,
                 device: str = "cuda",
                 storage: str = "sde_retune_fine.log",
                 study_name: str = "sde_gan",
@@ -69,7 +69,7 @@ def tune_sdegan(n_trials: int = 64,
     )
     critic_iterations = 5
 
-    def objective(trial: optuna.Trial):
+    def objective(trial: optuna.Trial, dirname: str | None = None):
         params = {
             "ISO":                "ERCOT",
             "variables":          ["TOTALLOAD", "WIND", "SOLAR"],
@@ -83,9 +83,9 @@ def tune_sdegan(n_trials: int = 64,
         }
 
         readout_activations = {
-            "TOTALLOAD": "identity",    # output in (-inf, inf)
+            "TOTALLOAD": "relu",        # output in [0, inf)
             "WIND":      "sigmoid",     # output in (0, 1)
-            "SOLAR":     "hardsigmoid"  # output in [0, 1]
+            "SOLAR":     "relu"         # output in [0, inf)
         }
 
         data_size = len(params["variables"])
@@ -256,22 +256,6 @@ def tune_sdegan(n_trials: int = 64,
                         return t.value
         except:
             pass
-        print(trial.params)
-
-        # import json
-        # with open("saved_models/sde_hiddensize16_numunits64_numlayers3/params_sde_ERCOT_tws.json", "r") as f:
-        #     saved_params = json.load(f)
-        # all_keys = list(set(params.keys()) | set(saved_params.keys()))
-        # for k in all_keys:
-        #     if k not in params:
-        #         print(k, "not in params...", saved_params[k])
-        #         continue
-        #     if k not in saved_params:
-        #         print(k, "not in saved_params...", params[k])
-        #         continue
-        #     print(f"{k}\t{params[k]}\t{saved_params[k]}")
-
-        # exit()
 
         trainer.train(data_loader=dataloader, epochs=params['epochs'], plot_every=plot_every, print_every=print_every)
 
@@ -285,22 +269,23 @@ def tune_sdegan(n_trials: int = 64,
             # take the first letter of underscore delimited words in the key
             shortened_key = ''.join([k[0].lower() for k in k.split('_')])
             param_str += f"{shortened_key}{v}"
-        dirname = f"saved_models/dynamical/"
+        # dirname = f"saved_models/dynamical/"
+        dirname = dirname or f"saved_models/sde_{param_str}/"
         if not os.path.exists(dirname):
             os.makedirs(dirname)
 
         # Save training visualizations
         iso = params['ISO']
         varnames_abbrev = ''.join([v.lower()[0] for v in params['variables']])
-        trainer.save_training_gif(dirname + f'training_sde_{iso}_{varnames_abbrev}.gif')
+        trainer.save_training_gif(os.path.join(dirname, f'training_sde_{iso}_{varnames_abbrev}.gif'))
 
         # Save models
         torch.save(G.state_dict(), dirname + f'sde_gen_{iso}_{varnames_abbrev}.pt')
         torch.save(D.state_dict(), dirname + f'sde_dis_{iso}_{varnames_abbrev}.pt')
 
         if trainer._swa:
-            torch.save(trainer.G_swa.state_dict(), dirname + f'sde_gen_swa_{iso}_{varnames_abbrev}.pt')
-            torch.save(trainer.D_swa.state_dict(), dirname + f'sde_dis_swa_{iso}_{varnames_abbrev}.pt')
+            torch.save(trainer.G_swa.state_dict(), os.path.join(dirname, f'sde_gen_swa_{iso}_{varnames_abbrev}.pt'))
+            torch.save(trainer.D_swa.state_dict(), os.path.join(dirname, f'sde_dis_swa_{iso}_{varnames_abbrev}.pt'))
 
         # Save parameters
         params['model_save_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -309,9 +294,13 @@ def tune_sdegan(n_trials: int = 64,
         with open(filename, 'w') as f:
             json.dump(params, f)
 
-        plot_model_results(G, transformer, params["variables"],
-                        G_swa=trainer.G_swa if trainer._swa else None,
-                        dirname=dirname)
+        plot_model_results(G=G,
+                           transformer=transformer,
+                           varnames=params["variables"],
+                           model_type="SDE",
+                           included_models="SDE",
+                           G_swa=trainer.G_swa if trainer._swa else None,
+                           dirname=dirname)
 
         # Calculate Wasserstein distance between the real and generated data for each variable
         # and return the average. Use the score of the SWA model if it was used.
@@ -334,22 +323,11 @@ def tune_sdegan(n_trials: int = 64,
     # storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage(storage))
     # study = optuna.create_study(directions=["minimize", "minimize", "minimize"], study_name=study_name, storage=storage, load_if_exists=True)
     # study.optimize(objective, n_trials=n_trials)
-    # with open("../best_sde_model/params_sde_ERCOT_tws.json", "r") as f:
-    #     saved_params = json.load(f)
 
-    # best_params = {
-    #     "sde_hidden_size": saved_params["hidden_size"],
-    #     "num_units": saved_params["drift_num_units"],
-    #     "num_hidden_layers": saved_params["drift_num_hidden_layers"],
-    #     "dis_num_layers": saved_params["dis_num_layers"],
-    #     "dis_num_units": saved_params["dis_num_filters"],
-    #     "readout_num_hidden_layers": saved_params["readout_num_hidden_layers"],
-    #     "readout_num_units": saved_params["readout_num_units"]
-    # }
-
+    # These parameters were selected via hyperparameter tuning
     best_params = {'dis_num_hidden_layers': 3, 'dis_num_units': 512, 'genopt_lr': 5e-05, 'genopt_lr_init_mult': 10.0, 'disopt_lr_mult': 5.0, 'genopt_beta1': 0.0}
     fixed_trial = optuna.trial.FixedTrial(best_params)
-    objective(fixed_trial)
+    objective(fixed_trial, dirname="saved_models/sde_final_eia/")
 
 
 if __name__ == '__main__':

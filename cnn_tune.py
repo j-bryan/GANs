@@ -63,7 +63,8 @@ def tune_cnn_gan(n_trials: int = 128,
         test_size=0.0,
         valid_size=0.0,
     )
-    critic_iterations = max(1, min(10, len(dataloader)))
+    # critic_iterations = max(1, min(10, len(dataloader)))
+    critic_iterations = 5
 
     def objective(trial: optuna.Trial, dirname: str | None = None):
         gen_num_filters = trial.suggest_categorical("gen_num_filters", [8, 16, 32, 64, 128])
@@ -90,9 +91,9 @@ def tune_cnn_gan(n_trials: int = 128,
         }
 
         readout_activations = {
-            "TOTALLOAD": "identity",    # output in (-inf, inf)
+            "TOTALLOAD": "relu",        # output in [0, inf)
             "WIND":      "sigmoid",     # output in (0, 1)
-            "SOLAR":     "hardsigmoid"  # output in [0, 1]
+            "SOLAR":     "relu"         # output in [0, inf)
         }
 
         data_size = len(params["variables"])
@@ -217,13 +218,8 @@ def tune_cnn_gan(n_trials: int = 128,
     # fixed = optuna.trial.FixedTrial(best_totalload.params)
     # objective(fixed, dirname="saved_models/cnn_final/best_totalload")
 
-    params = best_wind.params
-    params["lr"] = 1e-4
     fixed = optuna.trial.FixedTrial(best_wind.params)
-    objective(fixed, dirname="saved_models/cnn_final/best_wind_lr1e-4")
-    params["lr"] = 1e-5
-    fixed = optuna.trial.FixedTrial(best_wind.params)
-    objective(fixed, dirname="saved_models/cnn_final/best_wind_lr1e-5")
+    objective(fixed, dirname="saved_models/cnn_final_eia")
 
     # fixed = optuna.trial.FixedTrial(best_solar.params)
     # objective(fixed, dirname="saved_models/cnn_final/best_solar")
