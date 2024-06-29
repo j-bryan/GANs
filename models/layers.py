@@ -8,7 +8,7 @@ class FFNNConfig:
     num_units: int
     num_hidden_layers: int
     out_size: int
-    activation: str = "lipswish"
+    activation: str = "relu"
     final_activation: str = "identity"
 
     def to_dict(self, prefix: str = ""):
@@ -57,7 +57,7 @@ class FFNN(torch.nn.Module):
                  out_size: int,
                  num_units: int,
                  num_hidden_layers: int,
-                 activation: str = 'lipswish',
+                 activation: str = 'relu',
                  activation_kwargs: dict = None,
                  final_activation: str | list[str] = 'identity',
                  final_activation_kwargs: dict = None) -> None:

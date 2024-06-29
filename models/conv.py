@@ -16,7 +16,7 @@ class Generator(nn.Module, Preprocessor):
                  num_layers: int,
                  output_size: int,
                  num_vars: int,
-                 activation: str = 'lipswish',
+                 activation: str = 'relu',
                  output_activation: str = 'sigmoid',
                  **kwargs) -> None:
         """
@@ -88,7 +88,7 @@ class Discriminator(nn.Module):
     def __init__(self,
                  num_filters: int,
                  num_layers: int,
-                 activation: str = 'lipswish',
+                 activation: str = 'relu',
                  output_activation: str = 'sigmoid',
                  **kwargs) -> None:
         """
