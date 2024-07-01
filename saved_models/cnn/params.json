@@ -1,0 +1,1 @@
+{"ISO": "ERCOT", "variables": ["TOTALLOAD", "WIND", "SOLAR"], "time_features": ["HOD"], "time_series_length": 24, "critic_iterations": 5, "penalty_weight": 10.0, "epochs": 2000, "random_seed": 12345, "batch_size": 512, "init_noise_size": 24, "gen_num_filters": 16, "gen_num_layers": 4, "dis_num_filters": 128, "dis_num_layers": 2, "model_save_datetime": "2024-06-29 13:58:20"}
