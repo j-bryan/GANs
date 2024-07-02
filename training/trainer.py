@@ -18,6 +18,8 @@ class Trainer:
                  discriminator: torch.nn.Module,
                  g_optimizer: torch.optim.Optimizer,
                  d_optimizer: torch.optim.Optimizer,
+                 g_scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+                 d_scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
                  device: str | None = None,
@@ -55,6 +57,8 @@ class Trainer:
         self.D = discriminator.to(device)
         self.G_opt = g_optimizer
         self.D_opt = d_optimizer
+        self.G_scheduler = g_scheduler
+        self.D_scheduler = d_scheduler
         self.losses = {}
         self.critic_iterations = critic_iterations
 
@@ -173,6 +177,11 @@ class Trainer:
         for k, v in d_losses.items():
             epoch_losses[k] = v / n_iter_critic
 
+        if self.G_scheduler is not None:
+            self.G_scheduler.step()
+        if self.D_scheduler is not None:
+            self.D_scheduler.step()
+
         return epoch_losses
 
     def train(self,
@@ -236,6 +245,8 @@ class Trainer:
 
             if self.print_every > 0 and (epoch + 1) % self.print_every == 0 and not self.silent:
                 tqdm.write(print_template.format(epoch + 1, *[losses[k][-1] for k in loss_keys]))
+                if self.G_scheduler is not None:
+                    tqdm.write(f"Generator LR: {self.G_scheduler.get_last_lr()}")
 
             # Save progress
             if self.plot_every > 0 and (epoch + 1) % self.plot_every == 0:

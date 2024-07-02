@@ -10,21 +10,24 @@ class StandardScaler:
     def __init__(self, mean=None, std=None):
         self.mean = mean
         self.std = std
-        self._fitted = mean is not None and std is not None
+        # If mean and std are provided, we're assuming that the input data is already scaled. Don't
+        # scale it again when transform is called! For inverse_transform only.
+        self._no_transform = mean is not None and std is not None
 
     def fit(self, X):
-        if self._fitted:
+        if self._no_transform:
             return self
         self.mean = X.mean()
         self.std = X.std()
         return self
 
     def transform(self, X):
+        if self._no_transform:
+            return X
         return (X - self.mean) / self.std
 
     def fit_transform(self, X):
-        self.fit(X)
-        return self.transform(X)
+        return self.fit(X).transform(X)
 
     def inverse_transform(self, X):
         return X * self.std + self.mean

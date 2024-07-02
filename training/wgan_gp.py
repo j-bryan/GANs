@@ -12,6 +12,8 @@ class WGANGPTrainer(Trainer):
                  discriminator: torch.nn.Module,
                  g_optimizer: torch.optim.Optimizer,
                  d_optimizer: torch.optim.Optimizer,
+                 g_scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+                 d_scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
                  penalty_weight: float = 10,
                  critic_iterations: int = 5,
                  plotter: TrainingPlotter | None = None,
@@ -41,7 +43,7 @@ class WGANGPTrainer(Trainer):
             The device to use for training. If None, a GPU is used if available, otherwise
             defaulting to CPU.
         """
-        super().__init__(generator, discriminator, g_optimizer, d_optimizer, critic_iterations, plotter, device, swa)
+        super().__init__(generator, discriminator, g_optimizer, d_optimizer, g_scheduler, d_scheduler, critic_iterations, plotter, device, swa)
         self.penalty_weight = penalty_weight
         self.silent = silent
 

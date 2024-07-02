@@ -36,7 +36,7 @@ class AdamConfig:
 def tune_cnn_gan(n_trials: int = 128,
                  epochs: int = 2000,
                  batch_size: int = 512,
-                 noise_size: int = 24,
+                 noise_size: int = 10,
                  device: str = "cuda",
                  silent: bool = False) -> None:
     """
@@ -91,7 +91,7 @@ def tune_cnn_gan(n_trials: int = 128,
         }
 
         readout_activations = {
-            "TOTALLOAD": "relu",        # output in [0, inf)
+            "TOTALLOAD": "identity",    # output in [0, inf)
             "WIND":      "sigmoid",     # output in (0, 1)
             "SOLAR":     "relu"         # output in [0, inf)
         }
@@ -126,7 +126,8 @@ def tune_cnn_gan(n_trials: int = 128,
         D(D_init_input)
 
         # We'll use component-specific learning rates
-        lr = trial.suggest_categorical("lr", [1e-3, 1e-4, 1e-5])
+        # lr = trial.suggest_categorical("lr", [1e-3, 1e-4, 1e-5])
+        lr = 1e-3
         beta1 = trial.suggest_categorical("beta1", [0.0, 0.5, 0.9])
         if beta1 == 0.0:
             beta2 = 0.99
@@ -154,7 +155,7 @@ def tune_cnn_gan(n_trials: int = 128,
         # Create a unique identifier string so we can save all models and plots with reasonable file
         # names. They don't need to be human readable as long as we save the params dictionary with
         # the model results so we can find the model directory given a set of tunable parameters.
-        dirname = dirname or f'saved_models/cnn_retune/cnn_gnf{params["gen_num_filters"]}_gnl{params["gen_num_layers"]}_dnf{params["dis_num_filters"]}_dnl{params["dis_num_layers"]}_ns{noise_size}/'
+        dirname = dirname or f'saved_models/cnn_eia/cnn_gnf{params["gen_num_filters"]}_gnl{params["gen_num_layers"]}_dnf{params["dis_num_filters"]}_dnl{params["dis_num_layers"]}/'
         os.makedirs(dirname, exist_ok=True)
 
         # Save training visualizations
@@ -195,11 +196,12 @@ def tune_cnn_gan(n_trials: int = 128,
 
         return wd
 
-    storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage("cnn_gan_retune.log"))
-    # study = optuna.create_study(directions=["minimize", "minimize", "minimize"], study_name=f"cnn_{noise_size}", storage=storage)
+    storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage("cnn_eia_fixed.log"))
+
+    # study = optuna.create_study(directions=["minimize", "minimize", "minimize"], study_name=f"cnn_eia", storage=storage)
     # study.optimize(objective, n_trials=n_trials)
 
-    study = optuna.load_study(study_name=f"cnn_{noise_size}", storage=storage)
+    study = optuna.load_study(study_name=f"cnn_eia", storage=storage)
 
     # Search the trials for the best for each objective
     best_totalload = None
@@ -215,14 +217,27 @@ def tune_cnn_gan(n_trials: int = 128,
         if best_solar is None or values[2] < best_solar.values[2]:
             best_solar = trial
 
-    # fixed = optuna.trial.FixedTrial(best_totalload.params)
-    # objective(fixed, dirname="saved_models/cnn_final/best_totalload")
+    print(best_totalload)
+    print(best_wind)
+    print(best_solar)
+
+    for varname, params in zip(["load", "wind", "solar"], [best_totalload.params, best_wind.params, best_solar.params]):
+        src = f'saved_models/cnn_eia/cnn_gnf{params["gen_num_filters"]}_gnl{params["gen_num_layers"]}_dnf{params["dis_num_filters"]}_dnl{params["dis_num_layers"]}/'
+        dest = src.replace("cnn_eia", f"eia_best_{varname}")
+        print(f"Copying {src} to {dest}")
+        os.makedirs(dest, exist_ok=True)
+        os.system(f"cp -r {src} {dest}")
+
+    noise_size = 24
+
+    fixed = optuna.trial.FixedTrial(best_totalload.params)
+    objective(fixed, dirname="saved_models/cnn_eia_load_24")
 
     fixed = optuna.trial.FixedTrial(best_wind.params)
-    objective(fixed, dirname="saved_models/cnn_final_eia")
+    objective(fixed, dirname="saved_models/cnn_eia_wind_24")
 
-    # fixed = optuna.trial.FixedTrial(best_solar.params)
-    # objective(fixed, dirname="saved_models/cnn_final/best_solar")
+    fixed = optuna.trial.FixedTrial(best_solar.params)
+    objective(fixed, dirname="saved_models/cnn_eia_solar_24")
 
 
 if __name__ == '__main__':

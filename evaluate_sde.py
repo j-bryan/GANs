@@ -222,7 +222,7 @@ def plot_model_results(
         G_swa = G_swa.to(device)
 
     all_data_locations = {
-        "Historical": ("dataloaders/data/ercot.csv", dict(index_col=0)),
+        "Historical": ("dataloaders/data/ercot_eia.csv", dict(index_col=0)),
         "ARMA": ("ercot_samples_arma.csv", dict()),
         "CNN": ("ercot_samples_cnn.csv", dict()),
         "DGAN": ("ercot_samples_dgan.csv", dict()),
@@ -267,6 +267,10 @@ def plot_model_results(
 
     if "Historical" in data:
         np.random.shuffle(data["Historical"])
+
+    # If the historical data came from the EIA-scaled data, we need to unscale it.
+    if transformer is not None and "ercot_eia" in data_locations["Historical"][0]:
+        data["Historical"] = transformer.inverse_transform(data["Historical"])
 
     os.makedirs(dirname, exist_ok=True)
 
